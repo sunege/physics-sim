@@ -1,0 +1,15 @@
+{
+  "layout": {
+    "type": "grid",
+    "cols": 4,
+    "rows": 4,
+    "gap": 60,
+    "x": { "c": 0 },
+    "y": { "f": -16 }
+  },
+  "template": {
+    "type": "circle",
+    "radius": 15,
+    "options": { "restitution": 0.4, "frictionAir": 0 }
+  }
+}

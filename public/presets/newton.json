@@ -1,0 +1,10 @@
+{
+  "generator": "newton",
+  "params": {
+    "count": 5,
+    "radius": 18,
+    "stringLength": 160,
+    "anchorYRel": 0.3,
+    "launchAngleDeg": 60
+  }
+}

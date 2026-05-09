@@ -1,0 +1,10 @@
+{
+  "generator": "chain",
+  "params": {
+    "count": 8,
+    "bw": 40,
+    "bh": 15,
+    "spacing": 50,
+    "frictionAir": 0.01
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "layout": {
+    "type": "row",
+    "count": 10,
+    "spacing": 74,
+    "x": { "c": 0 },
+    "y": { "f": -41 }
+  },
+  "template": {
+    "type": "rectangle",
+    "w": 24,
+    "h": 80,
+    "options": { "restitution": 0.1, "frictionAir": 0 }
+  }
+}

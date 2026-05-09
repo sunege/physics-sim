@@ -1,0 +1,14 @@
+{
+  "layout": {
+    "type": "ring",
+    "count": 8,
+    "radius": 120,
+    "x": { "c": 0 },
+    "y": { "r": 0.5 }
+  },
+  "template": {
+    "type": "circle",
+    "radius": 15,
+    "options": { "restitution": 0.6, "frictionAir": 0 }
+  }
+}

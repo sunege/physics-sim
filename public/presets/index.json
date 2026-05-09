@@ -1,0 +1,9 @@
+[
+  { "id": "domino",    "label": "ドミノ列" },
+  { "id": "pyramid",   "label": "ピラミッド" },
+  { "id": "tower",     "label": "タワー" },
+  { "id": "chain",     "label": "チェーン" },
+  { "id": "grid",      "label": "グリッド" },
+  { "id": "circle-arr","label": "円形配置" },
+  { "id": "newton",    "label": "ニュートンのゆりかご" }
+]

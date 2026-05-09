@@ -1,0 +1,259 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "preset",
+  "title": "Preset",
+  "description": "Physics simulation preset. Exactly one top-level pattern must be present.",
+  "oneOf": [
+    { "$ref": "#/definitions/layoutPreset" },
+    { "$ref": "#/definitions/bodiesPreset" },
+    { "$ref": "#/definitions/generatorPreset" }
+  ],
+
+  "definitions": {
+
+    "coordX": {
+      "description": "X-axis coordinate. Use r (ratio), c (center offset), or a (absolute px). f is not allowed on X.",
+      "oneOf": [
+        { "type": "object", "required": ["r"], "additionalProperties": false,
+          "properties": { "r": { "type": "number", "minimum": 0, "maximum": 1, "description": "Ratio of canvas width (0–1)" } } },
+        { "type": "object", "required": ["c"], "additionalProperties": false,
+          "properties": { "c": { "type": "number", "description": "Absolute offset from canvas horizontal center" } } },
+        { "type": "object", "required": ["a"], "additionalProperties": false,
+          "properties": { "a": { "type": "number", "description": "Absolute pixel value" } } }
+      ]
+    },
+
+    "coordY": {
+      "description": "Y-axis coordinate. Use f (floor offset), r (ratio), or a (absolute px). c is not allowed on Y.",
+      "oneOf": [
+        { "type": "object", "required": ["f"], "additionalProperties": false,
+          "properties": { "f": { "type": "number", "description": "Offset from floorY (negative = above floor)" } } },
+        { "type": "object", "required": ["r"], "additionalProperties": false,
+          "properties": { "r": { "type": "number", "minimum": 0, "maximum": 1, "description": "Ratio of canvas height (0–1)" } } },
+        { "type": "object", "required": ["a"], "additionalProperties": false,
+          "properties": { "a": { "type": "number", "description": "Absolute pixel value" } } }
+      ]
+    },
+
+    "bodyOptions": {
+      "type": "object",
+      "properties": {
+        "restitution":  { "type": "number", "minimum": 0, "maximum": 1 },
+        "friction":     { "type": "number", "minimum": 0, "maximum": 1 },
+        "frictionAir":  { "type": "number", "minimum": 0 },
+        "isStatic":     { "type": "boolean" },
+        "angle":        { "type": "number", "description": "Initial rotation in radians" }
+      },
+      "additionalProperties": false
+    },
+
+    "templateRectangle": {
+      "type": "object",
+      "required": ["type", "w", "h"],
+      "properties": {
+        "type":    { "const": "rectangle" },
+        "w":       { "type": "number", "exclusiveMinimum": 0 },
+        "h":       { "type": "number", "exclusiveMinimum": 0 },
+        "options": { "$ref": "#/definitions/bodyOptions" }
+      },
+      "additionalProperties": false
+    },
+
+    "templateCircle": {
+      "type": "object",
+      "required": ["type", "radius"],
+      "properties": {
+        "type":    { "const": "circle" },
+        "radius":  { "type": "number", "exclusiveMinimum": 0 },
+        "options": { "$ref": "#/definitions/bodyOptions" }
+      },
+      "additionalProperties": false
+    },
+
+    "template": {
+      "description": "Body template used by the layout pattern.",
+      "oneOf": [
+        { "$ref": "#/definitions/templateRectangle" },
+        { "$ref": "#/definitions/templateCircle" }
+      ]
+    },
+
+    "layoutRow": {
+      "type": "object",
+      "required": ["type", "count", "spacing", "x", "y"],
+      "properties": {
+        "type":    { "const": "row" },
+        "count":   { "type": "integer", "minimum": 1 },
+        "spacing": { "type": "number", "exclusiveMinimum": 0 },
+        "x":       { "$ref": "#/definitions/coordX" },
+        "y":       { "$ref": "#/definitions/coordY" }
+      },
+      "additionalProperties": false
+    },
+
+    "layoutStack": {
+      "type": "object",
+      "required": ["type", "count", "x", "y"],
+      "properties": {
+        "type":  { "const": "stack" },
+        "count": { "type": "integer", "minimum": 1 },
+        "x":     { "$ref": "#/definitions/coordX" },
+        "y":     { "$ref": "#/definitions/coordY" }
+      },
+      "additionalProperties": false
+    },
+
+    "layoutGrid": {
+      "type": "object",
+      "required": ["type", "cols", "rows", "gap", "x", "y"],
+      "properties": {
+        "type": { "const": "grid" },
+        "cols": { "type": "integer", "minimum": 1 },
+        "rows": { "type": "integer", "minimum": 1 },
+        "gap":  { "type": "number", "exclusiveMinimum": 0 },
+        "x":    { "$ref": "#/definitions/coordX" },
+        "y":    { "$ref": "#/definitions/coordY" }
+      },
+      "additionalProperties": false
+    },
+
+    "layoutRing": {
+      "type": "object",
+      "required": ["type", "count", "radius", "x", "y"],
+      "properties": {
+        "type":   { "const": "ring" },
+        "count":  { "type": "integer", "minimum": 2 },
+        "radius": { "type": "number", "exclusiveMinimum": 0 },
+        "x":      { "$ref": "#/definitions/coordX" },
+        "y":      { "$ref": "#/definitions/coordY" }
+      },
+      "additionalProperties": false
+    },
+
+    "layoutPyramid": {
+      "type": "object",
+      "required": ["type", "rows", "x", "y"],
+      "properties": {
+        "type": { "const": "pyramid" },
+        "rows": { "type": "integer", "minimum": 1 },
+        "x":    { "$ref": "#/definitions/coordX" },
+        "y":    { "$ref": "#/definitions/coordY" }
+      },
+      "additionalProperties": false
+    },
+
+    "layout": {
+      "description": "Repetitive placement layout descriptor.",
+      "oneOf": [
+        { "$ref": "#/definitions/layoutRow" },
+        { "$ref": "#/definitions/layoutStack" },
+        { "$ref": "#/definitions/layoutGrid" },
+        { "$ref": "#/definitions/layoutRing" },
+        { "$ref": "#/definitions/layoutPyramid" }
+      ]
+    },
+
+    "layoutPreset": {
+      "type": "object",
+      "required": ["layout", "template"],
+      "properties": {
+        "layout":   { "$ref": "#/definitions/layout" },
+        "template": { "$ref": "#/definitions/template" }
+      },
+      "additionalProperties": false
+    },
+
+    "bodySpec": {
+      "description": "Single body in direct-coordinate mode. x/y are absolute pixels.",
+      "type": "object",
+      "required": ["type"],
+      "oneOf": [
+        {
+          "required": ["type", "x", "y", "w", "h"],
+          "properties": {
+            "type":    { "const": "rectangle" },
+            "x":       { "type": "number" },
+            "y":       { "type": "number" },
+            "w":       { "type": "number", "exclusiveMinimum": 0 },
+            "h":       { "type": "number", "exclusiveMinimum": 0 },
+            "options": { "$ref": "#/definitions/bodyOptions" }
+          }
+        },
+        {
+          "required": ["type", "x", "y", "radius"],
+          "properties": {
+            "type":    { "const": "circle" },
+            "x":       { "type": "number" },
+            "y":       { "type": "number" },
+            "radius":  { "type": "number", "exclusiveMinimum": 0 },
+            "options": { "$ref": "#/definitions/bodyOptions" }
+          }
+        },
+        {
+          "required": ["type", "vertices"],
+          "properties": {
+            "type":     { "const": "polygon" },
+            "vertices": {
+              "type": "array", "minItems": 3,
+              "items": {
+                "type": "object",
+                "required": ["x", "y"],
+                "properties": { "x": { "type": "number" }, "y": { "type": "number" } },
+                "additionalProperties": false
+              }
+            },
+            "options": { "$ref": "#/definitions/bodyOptions" }
+          }
+        }
+      ]
+    },
+
+    "constraintSpec": {
+      "description": "Constraint between two bodies (joint) or a body and a world point (spring/joint).",
+      "type": "object",
+      "required": ["label"],
+      "properties": {
+        "label":       { "type": "string", "enum": ["spring", "joint"] },
+        "bodyA":       { "type": "integer", "minimum": 0, "description": "Index into bodies array" },
+        "bodyB":       { "type": "integer", "minimum": 0, "description": "Index into bodies array" },
+        "pointA":      { "$ref": "#/definitions/vec2", "description": "Local attachment on bodyA" },
+        "pointB":      { "$ref": "#/definitions/vec2", "description": "Local attachment on bodyB" },
+        "pointAWorld": { "$ref": "#/definitions/vec2", "description": "World-space anchor (omit bodyA when set)" },
+        "length":      { "type": "number", "minimum": 0 },
+        "stiffness":   { "type": "number", "minimum": 0, "maximum": 1 },
+        "_springK":    { "type": "number", "exclusiveMinimum": 0, "description": "Hooke spring constant (spring only)" }
+      },
+      "additionalProperties": false
+    },
+
+    "vec2": {
+      "type": "object",
+      "required": ["x", "y"],
+      "properties": {
+        "x": { "type": "number" },
+        "y": { "type": "number" }
+      },
+      "additionalProperties": false
+    },
+
+    "bodiesPreset": {
+      "type": "object",
+      "required": ["bodies"],
+      "properties": {
+        "bodies":      { "type": "array", "items": { "$ref": "#/definitions/bodySpec" }, "minItems": 1 },
+        "constraints": { "type": "array", "items": { "$ref": "#/definitions/constraintSpec" } }
+      },
+      "additionalProperties": false
+    },
+
+    "generatorPreset": {
+      "type": "object",
+      "required": ["generator", "params"],
+      "properties": {
+        "generator": { "type": "string", "description": "Name of a registered generator (e.g. 'chain', 'newton')" },
+        "params":    { "type": "object", "description": "Generator-specific parameters" }
+      },
+      "additionalProperties": false
+    }
+  }
+}

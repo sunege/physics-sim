@@ -1,0 +1,14 @@
+{
+  "layout": {
+    "type": "stack",
+    "count": 8,
+    "x": { "c": 0 },
+    "y": { "f": -13.5 }
+  },
+  "template": {
+    "type": "rectangle",
+    "w": 50,
+    "h": 25,
+    "options": { "restitution": 0.1, "frictionAir": 0 }
+  }
+}
