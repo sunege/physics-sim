@@ -145,6 +145,13 @@ button:hover {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  opacity: 1;
+  transition: opacity 0.15s;
+}
+
+.tb-popover.open.spawn-panel-hidden {
+  opacity: 0;
+  pointer-events: none;
 }
 
 .pop-row {
@@ -424,11 +431,35 @@ button:hover {
   flex: 0 0 58px;
 }
 
+.spawn-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-bottom: 4px;
+  border-bottom: 1px solid #0f3460;
+  margin-bottom: 2px;
+}
+
 .spawn-panel-title {
   font-size: 0.78rem;
   color: #e2b96f;
   font-weight: bold;
-  padding-bottom: 4px;
-  border-bottom: 1px solid #0f3460;
-  margin-bottom: 2px;
+}
+
+#spawn-panel-collapse {
+  padding: 1px 5px;
+  font-size: 0.7rem;
+  background: none;
+  border-color: #444;
+  color: #888;
+  line-height: 1;
+}
+
+#spawn-panel-collapse:hover {
+  background: #333;
+  color: #ccc;
+}
+
+.spawn-panel-collapsed .pop-row {
+  display: none;
 }

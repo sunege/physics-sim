@@ -21,7 +21,10 @@ document.querySelector('#app').innerHTML = `
           <button id="btn-tri-arb" class="toggle-btn" data-tooltip="任意三角形を追加">△ 任意</button>
           <button id="btn-polygon" class="toggle-btn" data-tooltip="多角形を追加">⬡ 多角</button>
           <div class="tb-popover" id="spawn-panel">
-            <div id="spawn-panel-title" class="spawn-panel-title"></div>
+            <div class="spawn-panel-header">
+              <span id="spawn-panel-title" class="spawn-panel-title"></span>
+              <button id="spawn-panel-collapse" title="折りたたむ">▲</button>
+            </div>
             <div class="pop-row" id="spawn-size-row">
               <span class="pop-label spawn-label" id="spawn-size-label">幅</span>
               <input type="range" id="spawn-size" min="10" max="200" step="1" value="80">
@@ -73,6 +76,22 @@ document.querySelector('#app').innerHTML = `
         <button id="btn-pause" data-tooltip="一時停止 / 再開">⏸ 停止</button>
         <button id="reset" data-tooltip="一時保存があればその状態へ、なければ全クリア">↺ リセット</button>
         <button id="btn-reset-view" data-tooltip="ズーム・パンをデフォルトに戻す">⊞ View</button>
+      </div>
+
+      <div class="toolbar-sep"></div>
+
+      <div class="tb-group">
+        <span style="font-size:0.72rem;color:#aaa;white-space:nowrap">速度</span>
+        <input type="range" id="time-scale" min="0.1" max="3" step="0.05" value="1" style="width:60px;accent-color:#e94560" data-tooltip="シミュレーション速度 (×0.1〜×3)">
+        <span id="time-scale-val" style="font-size:0.72rem;font-family:monospace;color:#e2b96f;min-width:28px">×1.0</span>
+      </div>
+
+      <div class="toolbar-sep"></div>
+
+      <div class="tb-group" data-tooltip="停止中に全オブジェクトの回転を強制ロックする">
+        <label style="font-size:0.72rem;color:#aaa;white-space:nowrap;cursor:pointer;display:flex;align-items:center;gap:4px">
+          <input type="checkbox" id="pause-rot-lock">停止中回転固定
+        </label>
       </div>
     </div>
 
@@ -269,6 +288,14 @@ document.querySelector('#app').innerHTML = `
           <span class="param-key">衝突判定</span>
           <input type="checkbox" id="p-collision" checked>
         </label>
+        <label class="slider-row">
+          <span class="param-key">回転ロック</span>
+          <input type="checkbox" id="p-rot-lock">
+        </label>
+        <label class="slider-row">
+          <span class="param-key">重心表示</span>
+          <input type="checkbox" id="p-show-com">
+        </label>
         </div>
       </div>
     </div>
@@ -281,6 +308,19 @@ const panelDisplay  = document.getElementById('panel-display')
 const speedGraphCanvas = document.getElementById('speed-graph')
 const speedGraphCtx    = speedGraphCanvas.getContext('2d')
 const connectHint   = document.getElementById('connect-hint')
+
+// Cached panel elements (avoid repeated getElementById in afterUpdate hot path)
+const elPType    = document.getElementById('p-type')
+const elPX       = document.getElementById('p-x')
+const elPY       = document.getElementById('p-y')
+const elPAngle   = document.getElementById('p-angle')
+const elPVx      = document.getElementById('p-vx')
+const elPVy      = document.getElementById('p-vy')
+const elPSpeed   = document.getElementById('p-speed')
+const elPAngV    = document.getElementById('p-angv')
+const elPKE      = document.getElementById('p-ke')
+const elPInertia = document.getElementById('p-inertia')
+const elZoom     = document.getElementById('zoom-display')
 
 // Return focus to body after any toolbar button click so keyboard shortcuts keep working
 document.getElementById('toolbar').addEventListener('click', e => {
@@ -365,6 +405,14 @@ let wasPanning = false   // stays true through mouseup so spawn handler can igno
 let panStart   = null    // { x, y, offsetX, offsetY }
 
 canvas.addEventListener('contextmenu', (e) => e.preventDefault())
+
+const spawnPanel = document.getElementById('spawn-panel')
+canvas.addEventListener('mouseenter', () => {
+  if (spawnMode || drawMode) spawnPanel.classList.add('spawn-panel-hidden')
+})
+canvas.addEventListener('mouseleave', () => {
+  spawnPanel.classList.remove('spawn-panel-hidden')
+})
 
 // ticket 03: wheel zoom — zoom toward mouse cursor
 canvas.addEventListener('wheel', (e) => {
@@ -504,6 +552,7 @@ function getResizeCursor(body, handleId) {
 let selectedBody  = null   // single-select
 let originalStroke = null
 let selectedBodies = []    // multi-select (mutually exclusive with selectedBody)
+let selectedBgConstraints = []  // bg-fixed constraint endpoints captured by rect-select
 let mouseDownPos   = null
 let rectSelect     = null  // { x1, y1, x2, y2 } while dragging
 let spawnDrag      = null  // { x1, y1, x2, y2 } while drag-spawning
@@ -538,14 +587,21 @@ function applyCamera() {
   render.options.hasBounds = true
   Mouse.setOffset(mouse, { x: -camera.offsetX / s, y: -camera.offsetY / s })
   Mouse.setScale(mouse, { x: 1 / s, y: 1 / s })
-  const zoomEl = document.getElementById('zoom-display')
-  if (zoomEl) zoomEl.textContent = Math.round(s * 100) + '%'
+  if (elZoom) elZoom.textContent = Math.round(s * 100) + '%'
 }
 
-// ticket 08: panel side uses screen-space X
+// ticket 08: panel side uses screen-space X with hysteresis (Schmitt-trigger style)
+const PANEL_HYSTERESIS = 120  // px — dead-band on each side of center before switching
+let _panelOnLeft = false
 function updatePanelSide(worldX) {
-  const screenX = worldX * camera.scale + camera.offsetX
-  infoPanel.classList.toggle('panel-left', screenX > render.options.width / 2)
+  const sx = worldX * camera.scale + camera.offsetX
+  const mid = render.options.width / 2
+  if (!_panelOnLeft && sx > mid + PANEL_HYSTERESIS) {
+    _panelOnLeft = true
+  } else if (_panelOnLeft && sx < mid - PANEL_HYSTERESIS) {
+    _panelOnLeft = false
+  }
+  infoPanel.classList.toggle('panel-left', _panelOnLeft)
 }
 
 function getTargets() {
@@ -572,6 +628,7 @@ function clearMultiSelect() {
     delete b._msOrigStroke
   })
   selectedBodies = []
+  selectedBgConstraints = []
 }
 
 // Single select
@@ -594,6 +651,10 @@ function selectBody(body) {
     document.getElementById('body-params').classList.remove('hidden')
     document.getElementById('panel-title').textContent = 'オブジェクト情報'
     syncSliders(body)
+    document.getElementById('p-rot-lock').checked = paused
+      ? (pauseRotBuffer.get(body)?.wasLocked ?? !!body._rotLocked)
+      : !!body._rotLocked
+    document.getElementById('p-show-com').checked = showCOM
     const isCircle = body.label === 'Circle Body'
     const isRect   = body.label === 'Rectangle Body'
     document.getElementById('size-circle').classList.toggle('hidden', !isCircle)
@@ -655,8 +716,10 @@ function clearAllSelection() {
 
 // Delete selected (single or multi)
 function deleteSelected() {
+  pushUndo()
   getTargets().forEach(b => {
     velocityBuffer.delete(b)
+    pauseRotBuffer.delete(b)
     const toRemove = customConstraints.filter(c => c.bodyA === b || c.bodyB === b)
     toRemove.forEach(c => {
       Composite.remove(engine.world, c)
@@ -715,7 +778,7 @@ function selectConstraint(c) {
   document.getElementById('c-spring-params').classList.toggle('hidden', c.label !== 'spring')
   document.getElementById('c-spring-section').classList.toggle('hidden', c.label !== 'spring')
   document.getElementById('c-joint-params').classList.toggle('hidden', c.label !== 'joint')
-  const showMotor = c.label === 'pin' && !c.bodyB && countBgPins(c.bodyA) === 1
+  const showMotor = c.label === 'pin'
   document.getElementById('c-motor-section').classList.toggle('hidden', !showMotor)
   if (c.label === 'spring') {
     document.getElementById('s-springk').value = c._springK ?? SPRING_K
@@ -749,6 +812,7 @@ function pointToSegmentDist(px, py, ax, ay, bx, by) {
 
 function deleteSelectedConstraint() {
   if (!selectedConstraint) return
+  pushUndo()
   if (selectedConstraint.label === 'joint' || selectedConstraint.label === 'pin') Composite.remove(engine.world, selectedConstraint)
   const idx = customConstraints.indexOf(selectedConstraint)
   if (idx !== -1) customConstraints.splice(idx, 1)
@@ -760,18 +824,30 @@ function deleteSelectedConstraint() {
 // ============================================================
 let paused = false
 let spawnMode = null  // null | 'circle' | 'box'
-const spawnParams = { size: 80, height: 80, mass: 1, restitution: 0.5, friction: 0.1, frictionAir: 0, noCollision: false }
+const spawnParams = { size: 80, sizeCircle: 40, sizeBox: 80, sizeTri: 40, height: 80, mass: 1, restitution: 0.5, friction: 0.1, frictionAir: 0, noCollision: false }
 let drawMode     = null   // null | 'tri-eq' | 'tri-arb' | 'polygon'
 let drawVertices = []
 let drawMousePos = null
 const MAX_POLY_VERTS = 8
 const CLOSE_DIST     = 15
 let showAllVelocities = false
+let showCOM = false
 let velDragging       = false
 let velDragBodies     = []
 const VEL_SCALE       = 30
 const VEL_TIP_RADIUS  = 12
 const velocityBuffer  = new Map()  // body → { vx, vy, av }
+const pauseRotBuffer  = new Map()  // body → { wasLocked, origInertia }
+
+let _dynBodiesCache = null
+function dynamicBodies() {
+  if (!_dynBodiesCache)
+    _dynBodiesCache = Composite.allBodies(engine.world).filter(b => !b.isStatic)
+  return _dynBodiesCache
+}
+Events.on(engine.world, 'afterAdd',    () => { _dynBodiesCache = null })
+Events.on(engine.world, 'afterRemove', () => { _dynBodiesCache = null })
+let pauseForceRotLock = false
 
 function togglePause() {
   paused = !paused
@@ -780,9 +856,28 @@ function togglePause() {
   document.getElementById('btn-pause').textContent = paused ? '▶ 再開' : '⏸ 停止'
   if (paused) {
     Composite.allBodies(engine.world).forEach(b => {
-      if (!b.isStatic) velocityBuffer.set(b, { vx: b.velocity.x, vy: b.velocity.y, av: b.angularVelocity })
+      if (b.isStatic) return
+      velocityBuffer.set(b, { vx: b.velocity.x, vy: b.velocity.y, av: b.angularVelocity })
+      const wasLocked   = !!b._rotLocked
+      const origInertia = wasLocked ? (b._origInertia ?? b.inertia) : b.inertia
+      pauseRotBuffer.set(b, { wasLocked, origInertia })
+      if (!wasLocked && pauseForceRotLock) {
+        Body.setInertia(b, Infinity)
+        Body.setAngularVelocity(b, 0)
+      }
     })
   } else {
+    pauseRotBuffer.forEach((data, b) => {
+      if (data.wasLocked) {
+        b._rotLocked    = true
+        b._origInertia  = data.origInertia
+      } else {
+        b._rotLocked    = false
+        b._origInertia  = null
+        Body.setInertia(b, data.origInertia)
+      }
+    })
+    pauseRotBuffer.clear()
     velocityBuffer.forEach((vel, b) => {
       Body.setVelocity(b, { x: vel.vx, y: vel.vy })
       Body.setAngularVelocity(b, vel.av)
@@ -930,7 +1025,7 @@ const GENERATORS = {
     const links = []
     for (let i = 0; i < count; i++) {
       const b = Bodies.rectangle(startX + i * spacing, bodyY, bw, bh, {
-        restitution: 0.1, frictionAir, render: { fillStyle: nextColor() }
+        restitution: 0.1, frictionAir, collisionFilter: { ...FILTER_BODY }, render: { fillStyle: nextColor() }
       })
       b._w = bw; b._h = bh
       Composite.add(engine.world, b)
@@ -984,7 +1079,7 @@ const GENERATORS = {
 
       const b = Bodies.circle(bx, by, radius, {
         restitution: 1.0, friction: 0, frictionAir: 0,
-        render: { fillStyle: nextColor() }
+        collisionFilter: { ...FILTER_BODY }, render: { fillStyle: nextColor() }
       })
       Composite.add(engine.world, b)
 
@@ -1015,6 +1110,7 @@ async function loadPreset(id) {
 }
 
 function applyPresetData(data) {
+  pushUndo()
   const width = worldBounds.right - worldBounds.left
   const height = worldBounds.bottom - worldBounds.top
   const floorY = worldBounds.bottom
@@ -1188,6 +1284,56 @@ function restoreSnapshot(snap) {
   applyCamera()
 }
 
+// ============================================================
+// Undo / Redo
+// ============================================================
+const UNDO_LIMIT = 50
+const undoStack = []
+const redoStack = []
+
+function pushUndo() {
+  undoStack.push(captureSnapshot())
+  if (undoStack.length > UNDO_LIMIT) undoStack.shift()
+  redoStack.length = 0
+}
+
+function undo() {
+  if (!undoStack.length) return
+  redoStack.push(captureSnapshot())
+  const wasConnect = connectMode
+  const wasPin = pinMode
+  restoreSnapshot(undoStack.pop())
+  if (wasConnect) setConnectMode(true)
+  if (wasPin) setPinMode(true)
+}
+
+function redo() {
+  if (!redoStack.length) return
+  undoStack.push(captureSnapshot())
+  const wasConnect = connectMode
+  const wasPin = pinMode
+  restoreSnapshot(redoStack.pop())
+  if (wasConnect) setConnectMode(true)
+  if (wasPin) setPinMode(true)
+}
+
+function bringToFront(targets) {
+  const nonStatic = targets.filter(b => !b.isStatic)
+  if (!nonStatic.length) return
+  pushUndo()
+  nonStatic.forEach(b => { Composite.remove(engine.world, b); Composite.add(engine.world, b) })
+}
+
+function sendToBack(targets) {
+  const nonStatic = targets.filter(b => !b.isStatic)
+  if (!nonStatic.length) return
+  pushUndo()
+  nonStatic.forEach(b => Composite.remove(engine.world, b))
+  let insertIdx = 0
+  engine.world.bodies.forEach((b, i) => { if (b.isStatic) insertIdx = i + 1 })
+  nonStatic.forEach((b, i) => engine.world.bodies.splice(insertIdx + i, 0, b))
+}
+
 function exportScene() {
   const allBodies = Composite.allBodies(engine.world).filter(b => !b.isStatic)
   const idToIndex = new Map(allBodies.map((b, i) => [b.id, i]))
@@ -1241,6 +1387,135 @@ document.getElementById('btn-export').addEventListener('click', () => {
   exportScene()
 })
 
+// ============================================================
+// Copy / Paste
+// ============================================================
+function copySelected() {
+  const toCopy = selectedBodies.length > 0 ? selectedBodies : (selectedBody ? [selectedBody] : [])
+  if (toCopy.length === 0) return
+
+  const centroid = {
+    x: toCopy.reduce((s, b) => s + b.position.x, 0) / toCopy.length,
+    y: toCopy.reduce((s, b) => s + b.position.y, 0) / toCopy.length,
+  }
+  const idxMap = new Map(toCopy.map((b, i) => [b.id, i]))
+
+  const bodies = toCopy.map(b => {
+    const base = {
+      restitution: b.restitution,
+      frictionAir: b.frictionAir,
+      friction: b.friction,
+      mass: b.mass,
+      fillStyle: b.render.fillStyle,
+      noCollision: b.collisionFilter.category === CAT_GHOST,
+      relX: b.position.x - centroid.x,
+      relY: b.position.y - centroid.y,
+      angle: b.angle,
+      _rotLocked: !!b._rotLocked,
+    }
+    if (b.label === 'Circle Body') return { ...base, type: 'circle', radius: b.circleRadius }
+    if (b._w !== undefined) return { ...base, type: 'rectangle', w: b._w, h: b._h }
+    return { ...base, type: 'polygon', vertices: b.vertices.map(v => ({ x: v.x, y: v.y })) }
+  })
+
+  const constraints = customConstraints
+    .filter(c => c.bodyA && idxMap.has(c.bodyA.id) && (!c.bodyB || idxMap.has(c.bodyB.id)))
+    .map(c => {
+      const spec = {
+        label: c.label,
+        bodyAIdx: idxMap.get(c.bodyA.id),
+        bodyBIdx: c.bodyB ? idxMap.get(c.bodyB.id) : null,
+        pointA: { x: c.pointA.x, y: c.pointA.y },
+        pointB: { x: c.pointB.x, y: c.pointB.y },
+        length: c.length,
+        stiffness: c.stiffness,
+      }
+      if (!c.bodyB) {
+        spec.pointBRelX = c.pointB.x - centroid.x
+        spec.pointBRelY = c.pointB.y - centroid.y
+      }
+      if (c._springK != null) spec._springK = c._springK
+      if (c.label === 'pin') {
+        spec._motorActive = c._motorActive
+        spec._motorSpeed  = c._motorSpeed
+        spec._motorDir    = c._motorDir
+        spec._motorTorque = c._motorTorque
+      }
+      return spec
+    })
+
+  clipboard = { centroid, bodies, constraints }
+}
+
+function pasteClipboard(worldPos) {
+  if (!clipboard) return
+
+  const newBodies = clipboard.bodies.map(spec => {
+    const x = worldPos.x + spec.relX
+    const y = worldPos.y + spec.relY
+    const opts = {
+      restitution: spec.restitution,
+      frictionAir: spec.frictionAir,
+      friction: spec.friction,
+      render: { fillStyle: spec.fillStyle },
+      collisionFilter: { ...(spec.noCollision ? FILTER_GHOST : FILTER_BODY) },
+    }
+    let b
+    if (spec.type === 'circle') {
+      b = Bodies.circle(x, y, spec.radius, opts)
+    } else if (spec.type === 'rectangle') {
+      b = Bodies.rectangle(x, y, spec.w, spec.h, { ...opts, angle: spec.angle })
+      b._w = spec.w; b._h = spec.h
+    } else {
+      const origCx = spec.vertices.reduce((s, v) => s + v.x, 0) / spec.vertices.length
+      const origCy = spec.vertices.reduce((s, v) => s + v.y, 0) / spec.vertices.length
+      const local = spec.vertices.map(v => ({ x: v.x - origCx, y: v.y - origCy }))
+      b = Bodies.fromVertices(x, y, local, { ...opts, label: 'Polygon Body' })
+    }
+    if (b) {
+      Body.setMass(b, spec.mass)
+      if (spec._rotLocked) { b._rotLocked = true; b._origInertia = b.inertia; Body.setInertia(b, Infinity) }
+    }
+    return b
+  }).filter(Boolean)
+
+  Composite.add(engine.world, newBodies)
+
+  for (const spec of clipboard.constraints) {
+    const bA = newBodies[spec.bodyAIdx]
+    if (!bA) continue
+    const bB = spec.bodyBIdx != null ? newBodies[spec.bodyBIdx] : null
+    const opts = {
+      bodyA: bA,
+      pointA: { x: spec.pointA.x, y: spec.pointA.y },
+      pointB: bB
+        ? { x: spec.pointB.x, y: spec.pointB.y }
+        : { x: worldPos.x + spec.pointBRelX, y: worldPos.y + spec.pointBRelY },
+      length: spec.length,
+      stiffness: spec.stiffness,
+      label: spec.label,
+    }
+    if (bB) opts.bodyB = bB
+    if (spec.label === 'pin') opts.render = { visible: false }
+    const c = Constraint.create(opts)
+    if (spec._springK != null) c._springK = spec._springK
+    if (spec.label === 'pin') {
+      if (spec._motorActive != null) c._motorActive = spec._motorActive
+      if (spec._motorSpeed  != null) c._motorSpeed  = spec._motorSpeed
+      if (spec._motorDir    != null) c._motorDir    = spec._motorDir
+      if (spec._motorTorque != null) c._motorTorque = spec._motorTorque
+    }
+    if (spec.label !== 'spring') Composite.add(engine.world, c)
+    customConstraints.push(c)
+  }
+
+  if (newBodies.length === 1) {
+    selectBody(newBodies[0])
+  } else if (newBodies.length > 1) {
+    setMultiSelect(newBodies)
+  }
+}
+
 document.getElementById('btn-import').addEventListener('click', () => {
   document.getElementById('file-import').click()
 })
@@ -1284,11 +1559,15 @@ let connectFirstPoint = null  // { x, y } local coords of chosen point; null = c
 let connectHoverBody  = null  // body under mouse in connect mode
 let connectHoverPoint = null  // { local, world } snap candidate under mouse, or null
 
-// Overlap cycling — Shift+click to lock onto a specific body
-let cycleLockBody = null  // body locked via Shift+click
+// Overlap cycling — right-click to lock onto a specific body
+let cycleLockBody = null  // body locked via right-click
 let cycleLockPos  = null  // world pos where lock was made
 let cycleBodies   = []    // bodies at lock position
 let cycleIndex    = 0     // current index in cycleBodies
+
+let lastMouseButton = 0   // button captured on mousedown (e.mouse.button is -1 by mouseup)
+let clipboard = null              // copy-paste clipboard { centroid, bodies, constraints }
+let lastMouseWorldPos = { x: 0, y: 0 } // last known mouse world position for paste
 
 const customConstraints = []
 let selectedConstraint = null
@@ -1361,6 +1640,7 @@ function setDrawMode(mode) {
   } else {
     connectHint.textContent = ''
     panel.classList.remove('open')
+    panel.classList.remove('spawn-panel-hidden')
     sizeRow.style.display = ''
     heightRow.style.display = ''
     canvas.style.cursor = ''
@@ -1395,17 +1675,24 @@ function setSpawnMode(mode) {
       sizeSlider.min = 10; sizeSlider.max = 200
       heightRow.style.display = ''
     }
+    const modeKey = spawnMode === 'circle' ? 'sizeCircle' : spawnMode === 'tri-eq' ? 'sizeTri' : 'sizeBox'
+    spawnParams.size = spawnParams[modeKey]
+    sizeSlider.value = spawnParams[modeKey]
+    document.getElementById('spawn-size-val').textContent = Math.round(spawnParams[modeKey]) + 'px'
     canvas.style.cursor = 'crosshair'
     if (drawMode) setDrawMode(null)
     if (connectMode) setConnectMode(false)
+    if (pinMode) setPinMode(false)
   } else {
     panel.classList.remove('open')
+    panel.classList.remove('spawn-panel-hidden')
     canvas.style.cursor = ''
     spawnDrag = null
   }
 }
 
 function spawnBody(type, x, y) {
+  pushUndo()
   const opts = {
     restitution: spawnParams.restitution,
     friction: spawnParams.friction,
@@ -1425,9 +1712,15 @@ function spawnBody(type, x, y) {
   }
   Body.setMass(b, spawnParams.mass)
   Composite.add(engine.world, b)
+  if (paused) {
+    velocityBuffer.set(b, { vx: 0, vy: 0, av: 0 })
+    pauseRotBuffer.set(b, { wasLocked: false, origInertia: b.inertia })
+    if (pauseForceRotLock) Body.setInertia(b, Infinity)
+  }
 }
 
 function spawnBodyFromRect(type, cx, cy, w, h) {
+  pushUndo()
   const opts = {
     restitution: spawnParams.restitution,
     friction: spawnParams.friction,
@@ -1449,6 +1742,11 @@ function spawnBodyFromRect(type, cx, cy, w, h) {
   }
   Body.setMass(b, spawnParams.mass)
   Composite.add(engine.world, b)
+  if (paused) {
+    velocityBuffer.set(b, { vx: 0, vy: 0, av: 0 })
+    pauseRotBuffer.set(b, { wasLocked: false, origInertia: b.inertia })
+    if (pauseForceRotLock) Body.setInertia(b, Infinity)
+  }
 }
 
 ;(function initSpawnSliders() {
@@ -1471,6 +1769,11 @@ function spawnBodyFromRect(type, cx, cy, w, h) {
   })
 })()
 
+document.getElementById('spawn-size').addEventListener('input', () => {
+  const modeKey = spawnMode === 'circle' ? 'sizeCircle' : spawnMode === 'tri-eq' ? 'sizeTri' : 'sizeBox'
+  spawnParams[modeKey] = spawnParams.size
+})
+
 document.getElementById('spawn-collision').addEventListener('change', e => {
   spawnParams.noCollision = !e.target.checked
 })
@@ -1491,6 +1794,7 @@ function isConvexAddition(verts, newPt) {
 
 function finalizePolygon(verts) {
   if (verts.length < 3) return
+  pushUndo()
   const cx = verts.reduce((s, v) => s + v.x, 0) / verts.length
   const cy = verts.reduce((s, v) => s + v.y, 0) / verts.length
   const localVerts = verts.map(v => ({ x: v.x - cx, y: v.y - cy }))
@@ -1498,13 +1802,18 @@ function finalizePolygon(verts) {
     restitution: spawnParams.restitution,
     friction: spawnParams.friction,
     frictionAir: spawnParams.frictionAir,
-    collisionFilter: { ...FILTER_BODY },
+    collisionFilter: { ...(spawnParams.noCollision ? FILTER_GHOST : FILTER_BODY) },
     label: 'Polygon Body',
     render: { fillStyle: nextColor() }
   })
   if (body) {
     Body.setMass(body, spawnParams.mass)
     Composite.add(engine.world, body)
+    if (paused) {
+      velocityBuffer.set(body, { vx: 0, vy: 0, av: 0 })
+      pauseRotBuffer.set(body, { wasLocked: false, origInertia: body.inertia })
+      if (pauseForceRotLock) Body.setInertia(body, Infinity)
+    }
   }
   drawVertices = []
   drawMousePos = null
@@ -1531,6 +1840,33 @@ document.querySelectorAll('.attach-btn').forEach(btn => {
 document.getElementById('btn-connect').addEventListener('click', () => setConnectMode(!connectMode))
 document.getElementById('btn-pin').addEventListener('click', () => setPinMode(!pinMode))
 
+document.getElementById('time-scale').addEventListener('input', e => {
+  const v = parseFloat(e.target.value)
+  engine.timing.timeScale = v
+  document.getElementById('time-scale-val').textContent = '×' + v.toFixed(2)
+})
+
+document.getElementById('pause-rot-lock').addEventListener('change', e => {
+  pauseForceRotLock = e.target.checked
+  if (!paused) return
+  pauseRotBuffer.forEach((data, b) => {
+    if (data.wasLocked) return
+    if (pauseForceRotLock) {
+      Body.setInertia(b, Infinity)
+      Body.setAngularVelocity(b, 0)
+    } else {
+      Body.setInertia(b, data.origInertia)
+    }
+  })
+})
+
+document.getElementById('spawn-panel-collapse').addEventListener('click', e => {
+  e.stopPropagation()
+  const panel = document.getElementById('spawn-panel')
+  const collapsed = panel.classList.toggle('spawn-panel-collapsed')
+  e.currentTarget.textContent = collapsed ? '▼' : '▲'
+})
+
 document.getElementById('btn-tri-eq').addEventListener('click',  () => setSpawnMode('tri-eq'))
 document.getElementById('btn-tri-arb').addEventListener('click', () => setDrawMode(drawMode === 'tri-arb' ? null : 'tri-arb'))
 document.getElementById('btn-polygon').addEventListener('click', () => setDrawMode(drawMode === 'polygon' ? null : 'polygon'))
@@ -1544,28 +1880,48 @@ Events.on(mouseConstraint, 'startdrag', () => {
   if (connectMode || pinMode || rectSelect || velDragging || drawMode || isPanning) {
     mouseConstraint.body = null
     mouse.button = -1
+  } else {
+    pushUndo()
   }
 })
 
 // Force-based spring constant (Hooke's law: F = k * extension, applied via Body.applyForce)
 // This conserves energy in Verlet integration, unlike PBD constraints.
 const SPRING_K = 0.0003
+const ARROW_ACCEL = 0.005  // arrow-key control: acceleration magnitude (uniform across masses)
+const arrowKeysDown = new Set()
+let nudgePendingUndo = true
+
+function queryPointByZ(bodies, pos) {
+  const hits = Query.point(bodies, pos)
+  const order = new Map(Composite.allBodies(engine.world).map((b, i) => [b.id, i]))
+  hits.sort((a, b) => (order.get(b.id) ?? 0) - (order.get(a.id) ?? 0))
+  return hits
+}
 
 function handleConnect(pos, shift) {
   const all = Composite.allBodies(engine.world).filter(b => !b.isStatic)
-  const hit = Query.point(all, pos)
+  const hit = queryPointByZ(all, pos)
 
-  // Shift+click: cycle lock to select which overlapping body to use
+  // Right-click: cycle lock to select which overlapping body to use
   if (shift) {
     if (hit.length === 0) return
     const THRESH = 15 / camera.scale
     if (cycleLockPos && Math.hypot(pos.x - cycleLockPos.x, pos.y - cycleLockPos.y) < THRESH && cycleBodies.length > 1) {
       cycleIndex = (cycleIndex + 1) % cycleBodies.length
     } else {
-      cycleBodies = hit; cycleIndex = 0
+      cycleBodies = hit; cycleIndex = 1 % hit.length
       cycleLockPos = { x: pos.x, y: pos.y }
     }
     cycleLockBody = cycleBodies[cycleIndex]
+    connectHoverBody = cycleLockBody
+    if (attachMode === 'edge') {
+      connectHoverPoint = findEdgePoint(connectHoverBody, pos)
+    } else if (attachMode === 'free') {
+      connectHoverPoint = { local: worldToLocal(pos, connectHoverBody), world: pos }
+    } else {
+      connectHoverPoint = findSnapPoint(connectHoverBody, pos)
+    }
     const n = cycleBodies.length
     const suffix = connectFirst ? '/ クリックで接続' : '/ クリックで選択'
     connectHint.textContent = `${n}個重複 (${cycleIndex + 1}/${n}) — 右クリックで切替 ${suffix}`
@@ -1593,6 +1949,7 @@ function handleConnect(pos, shift) {
   const target = connectHoverBody ?? hit[0] ?? null
   if (target === connectFirst) return
 
+  pushUndo()
   // pointA for spring: true local coords (worldToLocal); Matter.js never touches spring constraints.
   // pointA for joint: raw world offset (vertex - body.position); Matter.js rotates this each step.
   const springPointA = connectFirstPoint ?? { x: 0, y: 0 }
@@ -1664,29 +2021,47 @@ function _placePin(body, worldPt) {
   customConstraints.push(c)
 }
 
-function handlePin(pos) {
+function handlePin(pos, isRightClick) {
   const all = Composite.allBodies(engine.world).filter(b => !b.isStatic)
-  const hit = Query.point(all, pos)
+  const hit = queryPointByZ(all, pos)
   if (hit.length === 0) return
 
-  if (hit.length === 1) {
-    // Single body: background-fixed pin
-    const attach = computeAttachPoint(hit[0], pos, attachMode)
-    _placePin(hit[0], attach.world)
+  if (isRightClick) {
+    const THRESH = 15 / camera.scale
+    if (cycleLockPos && Math.hypot(pos.x - cycleLockPos.x, pos.y - cycleLockPos.y) < THRESH && cycleBodies.length > 1) {
+      cycleIndex = (cycleIndex + 1) % cycleBodies.length
+    } else {
+      cycleBodies = hit; cycleIndex = 1 % hit.length
+      cycleLockPos = { x: pos.x, y: pos.y }
+    }
+    cycleLockBody = cycleBodies[cycleIndex]
+    pinHoverBody = cycleLockBody
+    pinHoverPoint = computeAttachPoint(cycleLockBody, pos, attachMode)
+    const n = cycleBodies.length
+    connectHint.textContent = `${n}個重複 (${cycleIndex + 1}/${n}) — 右クリックで切替 / クリックで釘を打つ`
     return
   }
 
-  // Multiple bodies: pin consecutive pairs together at click position
-  for (let i = 0; i < hit.length - 1; i++) {
-    const bA = hit[i], bB = hit[i + 1]
-    const c = Constraint.create({
-      bodyA: bA, pointA: { x: pos.x - bA.position.x, y: pos.y - bA.position.y },
-      bodyB: bB, pointB: { x: pos.x - bB.position.x, y: pos.y - bB.position.y },
-      length: 0, stiffness: 1, label: 'pin',
-      render: { visible: false },
-    })
-    Composite.add(engine.world, c)
-    customConstraints.push(c)
+  const target = cycleLockBody ?? hit[0]
+  if (!target) return
+
+  pushUndo()
+  if (!cycleLockBody && hit.length > 1) {
+    // Multiple bodies, no lock: pin consecutive pairs together
+    for (let i = 0; i < hit.length - 1; i++) {
+      const bA = hit[i], bB = hit[i + 1]
+      const c = Constraint.create({
+        bodyA: bA, pointA: { x: pos.x - bA.position.x, y: pos.y - bA.position.y },
+        bodyB: bB, pointB: { x: pos.x - bB.position.x, y: pos.y - bB.position.y },
+        length: 0, stiffness: 1, label: 'pin',
+        render: { visible: false },
+      })
+      Composite.add(engine.world, c)
+      customConstraints.push(c)
+    }
+  } else {
+    const attach = computeAttachPoint(target, pos, attachMode)
+    _placePin(target, attach.world)
   }
 }
 
@@ -1694,6 +2069,7 @@ function handlePin(pos) {
 // Mouse events
 // ============================================================
 Events.on(mouseConstraint, 'mousedown', (e) => {
+  lastMouseButton = e.mouse.button
   const pos = e.mouse.position
   mouseDownPos = { x: pos.x, y: pos.y }
 
@@ -1734,6 +2110,7 @@ Events.on(mouseConstraint, 'mousedown', (e) => {
     for (const h of rHandles) {
       const wp = localToWorld(h.localPos, selectedBody)
       if (Math.hypot(pos.x - wp.x, pos.y - wp.y) < hitR) {
+        pushUndo()
         resizeDragging        = true
         resizeDragHandle      = h
         resizeDragAnchorWorld = localToWorld(h.anchorLocal, selectedBody)
@@ -1751,6 +2128,7 @@ Events.on(mouseConstraint, 'mousedown', (e) => {
     const handle  = getRotateHandlePos(_rhTargets)
     const hitR    = HANDLE_HIT_RADIUS / camera.scale
     if (Math.hypot(pos.x - handle.x, pos.y - handle.y) < hitR) {
+      pushUndo()
       rotateDragging        = true
       rotateDragCenter      = getRotateCenter(_rhTargets)
       rotateDragStartMAngle = Math.atan2(pos.y - rotateDragCenter.y, pos.x - rotateDragCenter.x)
@@ -1777,6 +2155,7 @@ Events.on(mouseConstraint, 'mousedown', (e) => {
 
 Events.on(mouseConstraint, 'mousemove', (e) => {
   const _mvPos = e.mouse.position
+  lastMouseWorldPos = { x: _mvPos.x, y: _mvPos.y }
 
   // Resize drag (circle only in this phase)
   if (resizeDragging && selectedBody && resizeDragHandle) {
@@ -1903,14 +2282,12 @@ Events.on(mouseConstraint, 'mousemove', (e) => {
     spawnDrag.y2 = e.mouse.position.y
   }
   if (connectMode || pinMode) {
-    const movable = Composite.allBodies(engine.world).filter(b => !b.isStatic)
+    const movable = dynamicBodies()
     const mpos    = e.mouse.position
-    const hit     = Query.point(movable, mpos)
-    const THRESH  = 15 / camera.scale
+    const hit     = queryPointByZ(movable, mpos)
 
-    // Release cycle lock when mouse moves away from lock position
-    if (cycleLockBody && cycleLockPos &&
-        Math.hypot(mpos.x - cycleLockPos.x, mpos.y - cycleLockPos.y) >= THRESH) {
+    // Release cycle lock when mouse leaves the locked body
+    if (cycleLockBody && !Query.point([cycleLockBody], mpos).length) {
       cycleLockBody = null; cycleLockPos = null; cycleBodies = []; cycleIndex = 0
     }
 
@@ -1948,11 +2325,15 @@ Events.on(mouseConstraint, 'mousemove', (e) => {
     }
 
     if (pinMode) {
-      pinHoverBody = hit[0] ?? null
+      pinHoverBody = cycleLockBody ?? hit[0] ?? null
       pinHoverPoint = pinHoverBody ? computeAttachPoint(pinHoverBody, mpos, attachMode) : null
-      connectHint.textContent = n > 1
-        ? `${n}個重複 — クリックで全てを一点に固定`
-        : 'オブジェクトをクリックして釘を打つ'
+      if (cycleLockBody && cycleBodies.length > 1) {
+        connectHint.textContent = `${cycleBodies.length}個重複 (${cycleIndex + 1}/${cycleBodies.length}) — 右クリックで切替 / クリックで釘を打つ`
+      } else if (n > 1) {
+        connectHint.textContent = `${n}個重複 — 右クリックで切替 / クリックで釘を打つ`
+      } else {
+        connectHint.textContent = 'オブジェクトをクリックして釘を打つ'
+      }
     }
   }
 })
@@ -1992,11 +2373,13 @@ Events.on(mouseConstraint, 'mouseup', (e) => {
     const h = Math.abs(rs.y2 - rs.y1)
     if (w > 5 || h > 5) {
       const x = Math.min(rs.x1, rs.x2), y = Math.min(rs.y1, rs.y2)
+      const rect = { min: { x, y }, max: { x: x + w, y: y + h } }
       const movable = Composite.allBodies(engine.world).filter(b => !b.isStatic)
-      const found = Query.region(movable, { min: { x, y }, max: { x: x + w, y: y + h } })
+      const found = Query.region(movable, rect)
       if (found.length === 1)      selectBody(found[0])
       else if (found.length > 1)   setMultiSelect(found)
       else                         clearAllSelection()
+      if (found.length >= 1) selectedBgConstraints = captureBgConstraintsInRect(found, rect)
       return
     }
     // Tiny drag → treat as plain click below
@@ -2053,32 +2436,48 @@ Events.on(mouseConstraint, 'mouseup', (e) => {
   }
 
   if (pinMode) {
-    handlePin(e.mouse.position)
+    handlePin(e.mouse.position, lastMouseButton === 2)
     return
   }
 
   if (connectMode) {
-    handleConnect(e.mouse.position, e.mouse.button === 2)
+    handleConnect(e.mouse.position, lastMouseButton === 2)
     return
   }
 
   // クリック地点の全候補をリストアップ: ピン → ボディ → 接続（サイクル選択のため）
   const clickCandidates = []
   const pinHitRadius = 10 / camera.scale
+  const movable = Composite.allBodies(engine.world).filter(b => !b.isStatic)
+  const bodyZOrder = new Map(movable.map((b, i) => [b.id, i]))
+  const constraintZ = c => Math.max(
+    c.bodyA ? (bodyZOrder.get(c.bodyA.id) ?? -1) : -1,
+    c.bodyB ? (bodyZOrder.get(c.bodyB.id) ?? -1) : -1
+  )
+
+  const pinHits = []
   customConstraints.forEach(c => {
     if (c.label !== 'pin') return
     const { pA, pB } = constraintWorldPoints(c)
     const dA = Math.hypot(e.mouse.position.x - pA.x, e.mouse.position.y - pA.y)
     const dB = c.bodyB ? Math.hypot(e.mouse.position.x - pB.x, e.mouse.position.y - pB.y) : Infinity
-    if (dA < pinHitRadius || dB < pinHitRadius) clickCandidates.push(c)
+    if (dA < pinHitRadius || dB < pinHitRadius) pinHits.push(c)
   })
-  const movable = Composite.allBodies(engine.world).filter(b => !b.isStatic)
-  Query.point(movable, e.mouse.position).forEach(b => clickCandidates.push(b))
+  pinHits.sort((a, b) => constraintZ(b) - constraintZ(a))
+  pinHits.forEach(c => clickCandidates.push(c))
+
+  const bodyHits = Query.point(movable, e.mouse.position)
+  bodyHits.sort((a, b) => (bodyZOrder.get(b.id) ?? 0) - (bodyZOrder.get(a.id) ?? 0))
+  bodyHits.forEach(b => clickCandidates.push(b))
+
+  const connHits = []
   customConstraints.forEach(c => {
     if (c.label === 'pin') return
     const { pA, pB } = constraintWorldPoints(c)
-    if (pointToSegmentDist(e.mouse.position.x, e.mouse.position.y, pA.x, pA.y, pB.x, pB.y) < 12) clickCandidates.push(c)
+    if (pointToSegmentDist(e.mouse.position.x, e.mouse.position.y, pA.x, pA.y, pB.x, pB.y) < 12) connHits.push(c)
   })
+  connHits.sort((a, b) => constraintZ(b) - constraintZ(a))
+  connHits.forEach(c => clickCandidates.push(c))
 
   if (clickCandidates.length === 0) { clearAllSelection(); return }
 
@@ -2099,12 +2498,28 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'Space') {
     e.preventDefault()
   }
+  if ((e.metaKey || e.ctrlKey) && e.key === 'z' && !e.shiftKey) {
+    e.preventDefault(); undo(); return
+  }
+  if ((e.metaKey || e.ctrlKey) && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) {
+    e.preventDefault(); redo(); return
+  }
+  if ((e.metaKey || e.ctrlKey) && e.key === 'c') {
+    e.preventDefault(); copySelected(); return
+  }
+  if ((e.metaKey || e.ctrlKey) && e.key === 'v') {
+    e.preventDefault(); pasteClipboard(lastMouseWorldPos); return
+  }
   if (e.key === 'c' || e.key === 'C') {
     setConnectMode(!connectMode)
   }
+  if (e.key === 'p' || e.key === 'P') {
+    setPinMode(!pinMode)
+  }
   if (e.key === 'Escape') {
     if (spawnMode) { setSpawnMode(null); return }
-    if (drawMode) { setDrawMode(null); return }
+    if (drawMode)  { setDrawMode(null); return }
+    if (pinMode)   { setPinMode(false); return }
     if (connectFirst) { cancelConnectFirst(); connectHint.textContent = '1つ目のオブジェクトをクリック' }
     else setConnectMode(false)
   }
@@ -2117,17 +2532,57 @@ window.addEventListener('keydown', (e) => {
     if (selectedConstraint) deleteSelectedConstraint()
     else if (getTargets().length > 0) deleteSelected()
   }
+  if (e.key === 'f' && getTargets().length > 0) bringToFront(getTargets())
+  if (e.key === 'b' && getTargets().length > 0) sendToBack(getTargets())
+  if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.key)) {
+    if (getTargets().length > 0) e.preventDefault()
+    if (paused && getTargets().length > 0) {
+      if (nudgePendingUndo) { pushUndo(); nudgePendingUndo = false }
+      const step = e.shiftKey ? 10 : 1
+      const dx = e.key === 'ArrowLeft' ? -step : e.key === 'ArrowRight' ? step : 0
+      const dy = e.key === 'ArrowUp'   ? -step : e.key === 'ArrowDown'  ? step : 0
+      getTargets().filter(b => !b.isStatic).forEach(b => {
+        Body.setPosition(b, { x: b.position.x + dx, y: b.position.y + dy })
+        Body.setVelocity(b, { x: 0, y: 0 })
+      })
+    } else {
+      arrowKeysDown.add(e.key)
+    }
+  }
 })
 
 window.addEventListener('keyup', (e) => {
   if (e.code === 'Space') {
     togglePause()
   }
+  if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.key)) {
+    arrowKeysDown.delete(e.key)
+    nudgePendingUndo = true
+  }
 })
 
 // ============================================================
 // Spring drawing
 // ============================================================
+function captureBgConstraintsInRect(foundBodies, rect) {
+  const bodySet = new Set(foundBodies.map(b => b.id))
+  const result = []
+  customConstraints.forEach(c => {
+    let fixedEnd = null, worldPt = null, bodyEnd = null
+    if (!c.bodyA && c.bodyB) {
+      fixedEnd = 'A'; worldPt = c.pointA; bodyEnd = c.bodyB
+    } else if (c.bodyA && !c.bodyB) {
+      fixedEnd = 'B'; worldPt = c.pointB; bodyEnd = c.bodyA
+    }
+    if (!fixedEnd || !bodySet.has(bodyEnd.id)) return
+    if (worldPt.x >= rect.min.x && worldPt.x <= rect.max.x &&
+        worldPt.y >= rect.min.y && worldPt.y <= rect.max.y) {
+      result.push({ c, fixedEnd })
+    }
+  })
+  return result
+}
+
 function localToWorld(localPt, body) {
   const cos = Math.cos(body.angle), sin = Math.sin(body.angle)
   return {
@@ -2291,7 +2746,7 @@ function drawSpringLine(ctx, pA, pB, isSelected = false) {
   const endLen = Math.min(12, len * 0.12)
   const coils = 8, amp = 7
 
-  ctx.strokeStyle = isSelected ? '#ffffff' : '#e2b96f'
+  ctx.strokeStyle = isSelected ? '#ffffff' : '#aaaaaa'
   ctx.lineWidth   = isSelected ? 2.5 : 1.5
   ctx.beginPath()
   ctx.moveTo(pA.x, pA.y)
@@ -2305,7 +2760,7 @@ function drawSpringLine(ctx, pA, pB, isSelected = false) {
   ctx.lineTo(pB.x, pB.y)
   ctx.stroke()
 
-  ctx.fillStyle = isSelected ? '#ffffff' : '#e2b96f99'
+  ctx.fillStyle = isSelected ? '#ffffff' : '#aaaaaa99'
   ;[pA, pB].forEach(p => {
     ctx.beginPath()
     ctx.arc(p.x, p.y, 3 / camera.scale, 0, Math.PI * 2)
@@ -2449,7 +2904,7 @@ Events.on(render, 'afterRender', () => {
   // Velocity arrows (paused only)
   if (paused) {
     const velTargets = showAllVelocities
-      ? Composite.allBodies(engine.world).filter(b => !b.isStatic)
+      ? dynamicBodies()
       : getTargets()
     velTargets.forEach(b => drawVelocityArrow(ctx, b, selectedBody === b))
   }
@@ -2548,6 +3003,18 @@ Events.on(render, 'afterRender', () => {
     }
   }
 
+  // Center of mass display
+  if (showCOM && selectedBody) {
+    const { x, y } = selectedBody.position
+    const r = 8 / camera.scale
+    ctx.strokeStyle = '#ff6b6b'
+    ctx.lineWidth = 2 / camera.scale
+    ctx.beginPath(); ctx.moveTo(x - r, y); ctx.lineTo(x + r, y); ctx.stroke()
+    ctx.beginPath(); ctx.moveTo(x, y - r); ctx.lineTo(x, y + r); ctx.stroke()
+    ctx.strokeStyle = 'rgba(255,107,107,0.6)'
+    ctx.beginPath(); ctx.arc(x, y, r * 0.35, 0, Math.PI * 2); ctx.stroke()
+  }
+
   ctx.restore()
 
   // --- Screen-space drawing (no camera transform) ---
@@ -2611,7 +3078,32 @@ function jointReachable(from) {
 
 // Apply Hooke's law spring force each step (force-based, energy-conserving in Verlet)
 Events.on(engine, 'beforeUpdate', () => {
+  // Pause-drag: temporarily zero stiffness of bg-fixed constraints so they don't fight the mouse
+  if (paused && selectedBgConstraints.length > 0) {
+    const drag = mouseConstraint.body
+    if (drag && (drag === selectedBody || (selectedBodies.length > 1 && selectedBodies.includes(drag)))) {
+      selectedBgConstraints.forEach(({ c }) => {
+        if (c._pauseDragSavedStiffness === undefined) c._pauseDragSavedStiffness = c.stiffness
+        c.stiffness = 0
+      })
+    }
+  }
   if (paused) return
+  if (arrowKeysDown.size > 0) {
+    let dx = 0, dy = 0
+    if (arrowKeysDown.has('ArrowLeft'))  dx -= 1
+    if (arrowKeysDown.has('ArrowRight')) dx += 1
+    if (arrowKeysDown.has('ArrowUp'))    dy -= 1
+    if (arrowKeysDown.has('ArrowDown'))  dy += 1
+    const len = Math.hypot(dx, dy)
+    if (len > 0) {
+      dx /= len; dy /= len
+      getTargets().forEach(b => {
+        if (!b.isStatic)
+          Body.applyForce(b, b.position, { x: dx * ARROW_ACCEL * b.mass, y: dy * ARROW_ACCEL * b.mass })
+      })
+    }
+  }
   customConstraints.forEach(c => {
     if (c.label !== 'spring') return
     const { pA, pB } = constraintWorldPoints(c)
@@ -2625,13 +3117,24 @@ Events.on(engine, 'beforeUpdate', () => {
     if (c.bodyB && !c.bodyB.isStatic) Body.applyForce(c.bodyB, pB, { x: -fx, y: -fy })
   })
   customConstraints.forEach(c => {
-    if (c.label !== 'pin' || c.bodyB || !c._motorActive || !c.bodyA) return
-    const body = c.bodyA
+    if (c.label !== 'pin' || !c._motorActive || !c.bodyA) return
+    const bodyA = c.bodyA
+    const bodyB = c.bodyB
     const dir = c._motorDir ?? 1
     const maxSpd = c._motorSpeed ?? 2.0
-    body.torque += (c._motorTorque ?? 0.05) * dir
-    if (Math.abs(body.angularVelocity) > maxSpd && Math.sign(body.angularVelocity) === dir) {
-      Body.setAngularVelocity(body, maxSpd * dir)
+    const torq = c._motorTorque ?? 0.05
+    if (!bodyB || bodyB.isStatic) {
+      bodyA.torque += torq * dir
+      if (Math.abs(bodyA.angularVelocity) > maxSpd && Math.sign(bodyA.angularVelocity) === dir) {
+        Body.setAngularVelocity(bodyA, maxSpd * dir)
+      }
+    } else {
+      bodyA.torque += torq * dir
+      bodyB.torque -= torq * dir
+      const relAngVel = bodyA.angularVelocity - bodyB.angularVelocity
+      if (Math.abs(relAngVel) > maxSpd && Math.sign(relAngVel) === dir) {
+        Body.setAngularVelocity(bodyA, bodyB.angularVelocity + maxSpd * dir)
+      }
     }
   })
 })
@@ -2641,20 +3144,47 @@ Events.on(engine, 'afterUpdate', () => {
     const dragging = mouseConstraint.body
     const freeSet  = dragging ? jointReachable(dragging) : new Set()
 
-    // 一時停止中に複数選択ボディの1つをドラッグ → 全員追従
-    if (dragging && selectedBodies.length > 1 && selectedBodies.includes(dragging)) {
+    // 一時停止中のドラッグ追従: 複数選択 or 矩形選択で背景固定端点を含む場合
+    const inMulti  = dragging && selectedBodies.length > 1 && selectedBodies.includes(dragging)
+    const inSingle = dragging && dragging === selectedBody && selectedBgConstraints.length > 0
+    if (inMulti || inSingle) {
+      // Restore stiffness saved in beforeUpdate (constraints were zeroed to prevent fighting the drag)
+      selectedBgConstraints.forEach(({ c }) => {
+        if (c._pauseDragSavedStiffness !== undefined) {
+          c.stiffness = c._pauseDragSavedStiffness
+          delete c._pauseDragSavedStiffness
+        }
+      })
       const dx = dragging.position.x - dragging.positionPrev.x
       const dy = dragging.position.y - dragging.positionPrev.y
       if (Math.abs(dx) > 0.001 || Math.abs(dy) > 0.001) {
-        selectedBodies.forEach(b => {
-          if (b === dragging || b.isStatic) return
-          Body.setPosition(b, { x: b.position.x + dx, y: b.position.y + dy })
+        if (inMulti) {
+          selectedBodies.forEach(b => {
+            if (b === dragging || b.isStatic) return
+            Body.setPosition(b, { x: b.position.x + dx, y: b.position.y + dy })
+          })
+        }
+        selectedBgConstraints.forEach(({ c, fixedEnd }) => {
+          if (fixedEnd === 'A') { c.pointA.x += dx; c.pointA.y += dy }
+          else                  { c.pointB.x += dx; c.pointB.y += dy }
         })
+      }
+      // Zero velocities to prevent oscillation caused by accumulated kinetic energy
+      if (inMulti) {
+        selectedBodies.forEach(b => {
+          if (b.isStatic) return
+          Body.setVelocity(b, { x: 0, y: 0 })
+          Body.setAngularVelocity(b, 0)
+        })
+      }
+      if (inSingle) {
+        Body.setVelocity(dragging, { x: 0, y: 0 })
+        Body.setAngularVelocity(dragging, 0)
       }
     }
 
-    Composite.allBodies(engine.world).forEach(b => {
-      if (!b.isStatic && !freeSet.has(b)) {
+    dynamicBodies().forEach(b => {
+      if (!freeSet.has(b)) {
         Body.setVelocity(b, { x: 0, y: 0 })
         Body.setAngularVelocity(b, 0)
       }
@@ -2673,6 +3203,7 @@ Events.on(engine, 'afterUpdate', () => {
   }
 
   if (!selectedBody) return
+  if (paused && !mouseConstraint.body) return
   const b   = selectedBody
   const buf = paused ? (velocityBuffer.get(b) ?? { vx: 0, vy: 0, av: 0 }) : null
   const vx  = buf ? buf.vx : b.velocity.x
@@ -2684,16 +3215,16 @@ Events.on(engine, 'afterUpdate', () => {
   speedBuffer.push(speed)
   if (speedBuffer.length > SPEED_HISTORY) speedBuffer.shift()
 
-  document.getElementById('p-type').textContent    = getBodyType(b)
-  document.getElementById('p-x').textContent       = fmt(b.position.x) + ' px'
-  document.getElementById('p-y').textContent       = fmt(b.position.y) + ' px'
-  document.getElementById('p-angle').textContent   = fmt(b.angle * 180 / Math.PI) + ' °'
-  document.getElementById('p-vx').textContent      = fmt(vx) + ' px/s'
-  document.getElementById('p-vy').textContent      = fmt(vy) + ' px/s'
-  document.getElementById('p-speed').textContent   = fmt(speed) + ' px/s'
-  document.getElementById('p-angv').textContent    = fmt(av, 4) + ' rad/s'
-  document.getElementById('p-ke').textContent      = fmt(ke, 1)
-  document.getElementById('p-inertia').textContent = fmt(b.inertia, 1)
+  elPType.textContent    = getBodyType(b)
+  elPX.textContent       = fmt(b.position.x) + ' px'
+  elPY.textContent       = fmt(b.position.y) + ' px'
+  elPAngle.textContent   = fmt(b.angle * 180 / Math.PI) + ' °'
+  elPVx.textContent      = fmt(vx) + ' px/s'
+  elPVy.textContent      = fmt(vy) + ' px/s'
+  elPSpeed.textContent   = fmt(speed) + ' px/s'
+  elPAngV.textContent    = fmt(av, 4) + ' rad/s'
+  elPKE.textContent      = fmt(ke, 1)
+  elPInertia.textContent = fmt(b.inertia, 1)
 
   drawSpeedGraph()
 })
@@ -2731,6 +3262,33 @@ document.getElementById('s-frictionair').addEventListener('input', (e) => {
 document.getElementById('p-collision').addEventListener('change', e => {
   const filter = e.target.checked ? FILTER_BODY : FILTER_GHOST
   getTargets().forEach(b => { b.collisionFilter = { ...filter } })
+})
+document.getElementById('p-rot-lock').addEventListener('change', e => {
+  if (!selectedBody) return
+  if (paused) {
+    const buf = pauseRotBuffer.get(selectedBody)
+    if (e.target.checked) {
+      if (buf) buf.wasLocked = true
+      selectedBody._rotLocked   = true
+      selectedBody._origInertia = buf?.origInertia ?? selectedBody.inertia
+    } else {
+      if (buf) buf.wasLocked = false
+      selectedBody._rotLocked = false
+    }
+    return
+  }
+  if (e.target.checked) {
+    selectedBody._origInertia = selectedBody.inertia
+    selectedBody._rotLocked = true
+    Body.setInertia(selectedBody, Infinity)
+    Body.setAngularVelocity(selectedBody, 0)
+  } else {
+    selectedBody._rotLocked = false
+    if (selectedBody._origInertia != null) Body.setInertia(selectedBody, selectedBody._origInertia)
+  }
+})
+document.getElementById('p-show-com').addEventListener('change', e => {
+  showCOM = e.target.checked
 })
 
 document.getElementById('s-radius').addEventListener('input', (e) => {
@@ -2826,6 +3384,7 @@ gravitySlider.addEventListener('input', () => {
   engine.gravity.y = v
   gravityVal.textContent = v.toFixed(2)
 })
+gravitySlider.addEventListener('pointerdown', pushUndo)
 
 // ============================================================
 // Add / Reset
@@ -2849,6 +3408,7 @@ document.getElementById('btn-snapshot').addEventListener('click', () => {
 })
 
 document.getElementById('reset').addEventListener('click', () => {
+  pushUndo()
   if (savedSnapshot) {
     restoreSnapshot(savedSnapshot)
     return
@@ -2928,6 +3488,18 @@ worldHeightSlider.addEventListener('input', () => {
 })
 worldHeightNum.addEventListener('change', () => {
   applyWorldSize(+worldWidthNum.value, +worldHeightNum.value)
+})
+worldWidthSlider.addEventListener('pointerdown', pushUndo)
+worldHeightSlider.addEventListener('pointerdown', pushUndo)
+
+// Undo hook: property and size sliders in the info panel
+;[
+  's-mass', 's-restitution', 's-friction', 's-frictionair',
+  's-radius', 's-width', 's-height',
+  's-springk', 's-springlen', 's-jointstiff',
+  's-motor-speed', 's-motor-torque',
+].forEach(id => {
+  document.getElementById(id)?.addEventListener('pointerdown', pushUndo)
 })
 
 // ============================================================
