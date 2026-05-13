@@ -486,6 +486,7 @@ let resizeDragging        = false
 let resizeDragHandle      = null   // handle descriptor at drag start
 let resizeDragAnchorWorld = null   // world coords of anchor (fixed during drag)
 let resizeDragAngle       = null   // body.angle at drag start
+let _resizeHandleCache    = null   // { body, x, y, angle, handles: [{...h, wp}] }
 
 function getUnionBounds(bodies) {
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
@@ -770,10 +771,10 @@ function deleteSelected() {
   getTargets().forEach(b => {
     velocityBuffer.delete(b)
     pauseRotBuffer.delete(b)
-    const toRemove = customConstraints.filter(c => c.bodyA === b || c.bodyB === b)
+    const toRemove = allConstraints().filter(c => c.bodyA === b || c.bodyB === b)
     toRemove.forEach(c => {
       Composite.remove(engine.world, c)
-      customConstraints.splice(customConstraints.indexOf(c), 1)
+      removeConstraint(c)
     })
     Composite.remove(engine.world, b)
   })
@@ -794,8 +795,7 @@ function resizeBody(body, newW, newH) {
     body._h = newH
     Body.setAngle(body, angle)
   }
-  customConstraints.forEach(c => {
-    if (c.label !== 'spring') return
+  springs.forEach(c => {
     if (c.bodyA === body || c.bodyB === body) {
       const { pA, pB } = constraintWorldPoints(c)
       c.length = Math.hypot(pB.x - pA.x, pB.y - pA.y)
@@ -804,7 +804,7 @@ function resizeBody(body, newW, newH) {
 }
 
 function countBgPins(body) {
-  return customConstraints.filter(c => c.label === 'pin' && c.bodyA === body && !c.bodyB).length
+  return pins.filter(c => c.bodyA === body && !c.bodyB).length
 }
 
 function selectConstraint(c) {
@@ -865,8 +865,7 @@ function deleteSelectedConstraint() {
   if (!selectedConstraint) return
   pushUndo()
   if (selectedConstraint.label === 'joint' || selectedConstraint.label === 'pin') Composite.remove(engine.world, selectedConstraint)
-  const idx = customConstraints.indexOf(selectedConstraint)
-  if (idx !== -1) customConstraints.splice(idx, 1)
+  removeConstraint(selectedConstraint)
   clearAllSelection()
 }
 
@@ -1096,7 +1095,7 @@ const GENERATORS = {
         stiffness: 0.8, length: 0, label: 'joint'
       })
       Composite.add(engine.world, c)
-      customConstraints.push(c)
+      addConstraint(c)
     }
 
     const anchorL = Constraint.create({
@@ -1111,7 +1110,7 @@ const GENERATORS = {
     })
     Composite.add(engine.world, anchorL)
     Composite.add(engine.world, anchorR)
-    customConstraints.push(anchorL, anchorR)
+    addConstraint(anchorL); addConstraint(anchorR)
   },
 
   newton(params, ctx) {
@@ -1148,7 +1147,7 @@ const GENERATORS = {
         label: 'joint'
       })
       Composite.add(engine.world, c)
-      customConstraints.push(c)
+      addConstraint(c)
     }
   },
 }
@@ -1195,7 +1194,7 @@ function applyPresetData(data) {
     const constraints = instantiateConstraints(data.constraints, bodies)
     for (const c of constraints) {
       if (c.label !== 'spring') Composite.add(engine.world, c)
-      customConstraints.push(c)
+      addConstraint(c)
     }
   }
 }
@@ -1250,7 +1249,7 @@ function captureSnapshot() {
     }
   })
 
-  const constraints = customConstraints.map(c => {
+  const constraints = allConstraints().map(c => {
     const spec = {
       label: c.label,
       pointB: { x: c.pointB.x, y: c.pointB.y },
@@ -1288,7 +1287,7 @@ function restoreSnapshot(snap) {
   setPinMode(false)
   clearAllSelection()
   rectSelect = null
-  customConstraints.length = 0
+  clearConstraints()
   Composite.clear(engine.world)
   boundaries = createBoundaries()
   Composite.add(engine.world, boundaries)
@@ -1330,7 +1329,7 @@ function restoreSnapshot(snap) {
     const constraints = instantiateConstraints(snap.constraints, bodies)
     for (const c of constraints) {
       if (c.label !== 'spring') Composite.add(engine.world, c)
-      customConstraints.push(c)
+      addConstraint(c)
     }
   }
 
@@ -1410,7 +1409,7 @@ function exportScene() {
     }
   })
 
-  const constraints = customConstraints.map(c => {
+  const constraints = allConstraints().map(c => {
     const spec = {
       label: c.label,
       pointB: { x: c.pointB.x, y: c.pointB.y },
@@ -1475,7 +1474,7 @@ function copySelected() {
     return { ...base, type: 'polygon', vertices: b.vertices.map(v => ({ x: v.x, y: v.y })) }
   })
 
-  const constraints = customConstraints
+  const constraints = allConstraints()
     .filter(c => c.bodyA && idxMap.has(c.bodyA.id) && (!c.bodyB || idxMap.has(c.bodyB.id)))
     .map(c => {
       const spec = {
@@ -1563,7 +1562,7 @@ function pasteClipboard(worldPos) {
       if (spec._motorTorque != null) c._motorTorque = spec._motorTorque
     }
     if (spec.label !== 'spring') Composite.add(engine.world, c)
-    customConstraints.push(c)
+    addConstraint(c)
   }
 
   if (newBodies.length === 1) {
@@ -1615,6 +1614,8 @@ let connectFirstStroke = null
 let connectFirstPoint = null  // { x, y } local coords of chosen point; null = center
 let connectHoverBody  = null  // body under mouse in connect mode
 let connectHoverPoint = null  // { local, world } snap candidate under mouse, or null
+let _snapCacheConnect = null  // { body, x, y, candidates }
+let _snapCachePin     = null
 
 // Overlap cycling — right-click to lock onto a specific body
 let cycleLockBody = null  // body locked via right-click
@@ -1626,7 +1627,32 @@ let lastMouseButton = 0   // button captured on mousedown (e.mouse.button is -1 
 let clipboard = null              // copy-paste clipboard { centroid, bodies, constraints }
 let lastMouseWorldPos = { x: 0, y: 0 } // last known mouse world position for paste
 
-const customConstraints = []
+const springs = []
+const pins    = []
+const joints  = []
+
+function addConstraint(c) {
+  if (c.label === 'spring') springs.push(c)
+  else if (c.label === 'pin') pins.push(c)
+  else joints.push(c)
+}
+
+function removeConstraint(c) {
+  const arr = c.label === 'spring' ? springs : c.label === 'pin' ? pins : joints
+  const idx = arr.indexOf(c)
+  if (idx !== -1) arr.splice(idx, 1)
+}
+
+function clearConstraints() {
+  springs.length = 0
+  pins.length    = 0
+  joints.length  = 0
+}
+
+function allConstraints() {
+  return [...springs, ...joints, ...pins]
+}
+
 let selectedConstraint = null
 
 function setConnectMode(active) {
@@ -1929,8 +1955,8 @@ document.getElementById('btn-tri-arb').addEventListener('click', () => setDrawMo
 document.getElementById('btn-polygon').addEventListener('click', () => setDrawMode(drawMode === 'polygon' ? null : 'polygon'))
 
 document.getElementById('btn-clear-constraints').addEventListener('click', () => {
-  customConstraints.forEach(c => Composite.remove(engine.world, c))
-  customConstraints.length = 0
+  allConstraints().forEach(c => Composite.remove(engine.world, c))
+  clearConstraints()
 })
 
 Events.on(mouseConstraint, 'startdrag', () => {
@@ -2061,7 +2087,7 @@ function handleConnect(pos, shift) {
   }
 
   if (c.label !== 'spring') Composite.add(engine.world, c)
-  customConstraints.push(c)
+  addConstraint(c)
   cancelConnectFirst()
   connectHint.textContent = '1つ目のオブジェクトをクリック'
 }
@@ -2075,7 +2101,7 @@ function _placePin(body, worldPt) {
     render: { visible: false },
   })
   Composite.add(engine.world, c)
-  customConstraints.push(c)
+  addConstraint(c)
 }
 
 function handlePin(pos, isRightClick) {
@@ -2114,7 +2140,7 @@ function handlePin(pos, isRightClick) {
         render: { visible: false },
       })
       Composite.add(engine.world, c)
-      customConstraints.push(c)
+      addConstraint(c)
     }
   } else {
     const attach = computeAttachPoint(target, pos, attachMode)
@@ -2557,8 +2583,7 @@ Events.on(mouseConstraint, 'mouseup', (e) => {
   )
 
   const pinHits = []
-  customConstraints.forEach(c => {
-    if (c.label !== 'pin') return
+  pins.forEach(c => {
     const { pA, pB } = constraintWorldPoints(c)
     const dA = Math.hypot(e.mouse.position.x - pA.x, e.mouse.position.y - pA.y)
     const dB = c.bodyB ? Math.hypot(e.mouse.position.x - pB.x, e.mouse.position.y - pB.y) : Infinity
@@ -2572,8 +2597,7 @@ Events.on(mouseConstraint, 'mouseup', (e) => {
   bodyHits.forEach(b => clickCandidates.push(b))
 
   const connHits = []
-  customConstraints.forEach(c => {
-    if (c.label === 'pin') return
+  ;[...springs, ...joints].forEach(c => {
     const { pA, pB } = constraintWorldPoints(c)
     if (pointToSegmentDist(e.mouse.position.x, e.mouse.position.y, pA.x, pA.y, pB.x, pB.y) < 12) connHits.push(c)
   })
@@ -2669,7 +2693,7 @@ window.addEventListener('keyup', (e) => {
 function captureBgConstraintsInRect(foundBodies, rect) {
   const bodySet = new Set(foundBodies.map(b => b.id))
   const result = []
-  customConstraints.forEach(c => {
+  allConstraints().forEach(c => {
     let fixedEnd = null, worldPt = null, bodyEnd = null
     if (!c.bodyA && c.bodyB) {
       fixedEnd = 'A'; worldPt = c.pointA; bodyEnd = c.bodyB
@@ -2724,6 +2748,12 @@ function getSnapCandidates(body) {
     })]
   }
   return [center, ...body.vertices.map(v => ({ x: v.x, y: v.y }))]
+}
+
+function getCachedSnap(body, cache) {
+  if (cache && cache.body === body &&
+      cache.x === body.position.x && cache.y === body.position.y) return cache
+  return { body, x: body.position.x, y: body.position.y, candidates: getSnapCandidates(body) }
 }
 
 function findSnapPoint(body, pos, snapDist = 15 / camera.scale) {
@@ -2846,7 +2876,9 @@ function drawSpringLine(ctx, pA, pB, isSelected = false) {
   const ux = dx / len, uy = dy / len
   const vx = -uy,     vy = ux
   const endLen = Math.min(12, len * 0.12)
-  const coils = 8, amp = 7
+  const screenLen = len * camera.scale
+  const coils = screenLen < 20 ? 2 : screenLen < 50 ? 3 : screenLen < 100 ? 5 : 8
+  const amp = 7
 
   ctx.strokeStyle = isSelected ? '#ffffff' : '#aaaaaa'
   ctx.lineWidth   = isSelected ? 2.5 : 1.5
@@ -2883,22 +2915,33 @@ Events.on(render, 'afterRender', () => {
   ctx.strokeRect(worldBounds.left, worldBounds.top, worldBounds.right - worldBounds.left, worldBounds.bottom - worldBounds.top)
 
   // Constraints
-  customConstraints.forEach(c => {
+  const vMin = render.bounds.min, vMax = render.bounds.max
+  springs.forEach(c => {
     const { pA, pB } = constraintWorldPoints(c)
-    const isSelected = c === selectedConstraint
-    if (c.label === 'spring') drawSpringLine(ctx, pA, pB, isSelected)
-    else if (c.label === 'joint') drawJointLine(ctx, pA, pB, isSelected)
-    else if (c.label === 'pin') {
-      drawPinPoint(ctx, pA, isSelected)
-      if (c.bodyB) drawPinPoint(ctx, pB, isSelected)
-    }
+    if (Math.min(pA.x, pB.x) > vMax.x || Math.max(pA.x, pB.x) < vMin.x ||
+        Math.min(pA.y, pB.y) > vMax.y || Math.max(pA.y, pB.y) < vMin.y) return
+    drawSpringLine(ctx, pA, pB, c === selectedConstraint)
+  })
+  joints.forEach(c => {
+    const { pA, pB } = constraintWorldPoints(c)
+    if (Math.min(pA.x, pB.x) > vMax.x || Math.max(pA.x, pB.x) < vMin.x ||
+        Math.min(pA.y, pB.y) > vMax.y || Math.max(pA.y, pB.y) < vMin.y) return
+    drawJointLine(ctx, pA, pB, c === selectedConstraint)
+  })
+  pins.forEach(c => {
+    const { pA, pB } = constraintWorldPoints(c)
+    if (pA.x > vMax.x || pA.x < vMin.x || pA.y > vMax.y || pA.y < vMin.y) return
+    const isSel = c === selectedConstraint
+    drawPinPoint(ctx, pA, isSel)
+    if (c.bodyB) drawPinPoint(ctx, pB, isSel)
   })
 
   // Connect mode: snap point indicators
   if (connectMode) {
     if (connectHoverBody) {
       if (attachMode === 'snap') {
-        getSnapCandidates(connectHoverBody).forEach(world => {
+        _snapCacheConnect = getCachedSnap(connectHoverBody, _snapCacheConnect)
+        _snapCacheConnect.candidates.forEach(world => {
           ctx.fillStyle = 'rgba(255,255,255,0.45)'
           ctx.beginPath()
           ctx.arc(world.x, world.y, 4 / camera.scale, 0, Math.PI * 2)
@@ -2932,7 +2975,8 @@ Events.on(render, 'afterRender', () => {
   // Pin mode: hover preview
   if (pinMode && pinHoverBody) {
     if (attachMode === 'snap') {
-      getSnapCandidates(pinHoverBody).forEach(world => {
+      _snapCachePin = getCachedSnap(pinHoverBody, _snapCachePin)
+      _snapCachePin.candidates.forEach(world => {
         ctx.fillStyle = 'rgba(255,215,0,0.5)'
         ctx.beginPath()
         ctx.arc(world.x, world.y, 4 / camera.scale, 0, Math.PI * 2)
@@ -3088,17 +3132,27 @@ Events.on(render, 'afterRender', () => {
 
   // Resize handles (single body selected, circle or rectangle only)
   if (selectedBody && !connectMode && !drawMode && !spawnMode && !pinMode) {
-    const rHandles = getResizeHandles(selectedBody)
-    if (rHandles.length > 0) {
+    const b = selectedBody
+    if (!_resizeHandleCache ||
+        _resizeHandleCache.body !== b ||
+        _resizeHandleCache.x !== b.position.x ||
+        _resizeHandleCache.y !== b.position.y ||
+        _resizeHandleCache.angle !== b.angle) {
+      const rHandles = getResizeHandles(b)
+      _resizeHandleCache = {
+        body: b, x: b.position.x, y: b.position.y, angle: b.angle,
+        handles: rHandles.map(h => ({ ...h, wp: localToWorld(h.localPos, b) }))
+      }
+    }
+    if (_resizeHandleCache.handles.length > 0) {
       const rs = RESIZE_HANDLE_RADIUS / camera.scale
-      rHandles.forEach(h => {
-        const wp = localToWorld(h.localPos, selectedBody)
+      _resizeHandleCache.handles.forEach(h => {
         const active = resizeHandleHover === h.id
         ctx.fillStyle   = active ? '#ffffff' : 'rgba(255,255,255,0.75)'
         ctx.strokeStyle = active ? '#e94560' : 'rgba(233,69,96,0.7)'
         ctx.lineWidth   = 1.5 / camera.scale
         ctx.beginPath()
-        ctx.rect(wp.x - rs, wp.y - rs, rs * 2, rs * 2)
+        ctx.rect(h.wp.x - rs, h.wp.y - rs, rs * 2, rs * 2)
         ctx.fill()
         ctx.stroke()
       })
@@ -3169,8 +3223,7 @@ function jointReachable(from) {
   const queue = [from]
   while (queue.length) {
     const cur = queue.shift()
-    customConstraints.forEach(c => {
-      if (c.label !== 'joint') return
+    joints.forEach(c => {
       const other = c.bodyA === cur ? c.bodyB : c.bodyB === cur ? c.bodyA : null
       if (other && !visited.has(other)) { visited.add(other); queue.push(other) }
     })
@@ -3196,8 +3249,7 @@ Events.on(engine, 'beforeUpdate', () => {
       })
     }
   }
-  customConstraints.forEach(c => {
-    if (c.label !== 'spring') return
+  springs.forEach(c => {
     const { pA, pB } = constraintWorldPoints(c)
     const dx = pB.x - pA.x, dy = pB.y - pA.y
     const dist = Math.hypot(dx, dy)
@@ -3208,8 +3260,8 @@ Events.on(engine, 'beforeUpdate', () => {
     if (c.bodyA && !c.bodyA.isStatic) Body.applyForce(c.bodyA, pA, { x: fx, y: fy })
     if (c.bodyB && !c.bodyB.isStatic) Body.applyForce(c.bodyB, pB, { x: -fx, y: -fy })
   })
-  customConstraints.forEach(c => {
-    if (c.label !== 'pin' || !c._motorActive || !c.bodyA) return
+  pins.forEach(c => {
+    if (!c._motorActive || !c.bodyA) return
     const bodyA = c.bodyA
     const bodyB = c.bodyB
     const dir = c._motorDir ?? 1
@@ -3444,7 +3496,7 @@ document.getElementById('reset').addEventListener('click', () => {
   setConnectMode(false)
   clearAllSelection()
   rectSelect = null
-  customConstraints.length = 0
+  clearConstraints()
   Composite.clear(engine.world)
   boundaries = createBoundaries()
   Composite.add(engine.world, boundaries)
