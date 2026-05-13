@@ -317,6 +317,8 @@ const panelDisplay  = document.getElementById('panel-display')
 const speedGraphCanvas = document.getElementById('speed-graph')
 const speedGraphCtx    = speedGraphCanvas.getContext('2d')
 const connectHint   = document.getElementById('connect-hint')
+const DEFAULT_HINT  = 'Space: 停止/再開  |  C: 接続  |  P: 釘  |  F/B: 前面/背面  |  Del: 削除  |  Ctrl+Z/Y: 元に戻す/やり直す'
+connectHint.textContent = DEFAULT_HINT
 
 // Cached panel elements (avoid repeated getElementById in afterUpdate hot path)
 const elPType    = document.getElementById('p-type')
@@ -1706,7 +1708,7 @@ function setConnectMode(active) {
   document.getElementById('btn-connect').classList.toggle('active', active)
   if (!active) {
     cancelConnectFirst()
-    connectHint.textContent = ''
+    connectHint.textContent = DEFAULT_HINT
     connectHoverBody = null
     connectHoverPoint = null
     cycleLockBody = null; cycleLockPos = null; cycleBodies = []; cycleIndex = 0
@@ -1726,7 +1728,7 @@ function setPinMode(active) {
     pinHoverBody  = null
     pinHoverPoint = null
     cycleLockBody = null; cycleLockPos = null; cycleBodies = []; cycleIndex = 0
-    connectHint.textContent = ''
+    connectHint.textContent = DEFAULT_HINT
   } else {
     connectHint.textContent = 'オブジェクトをクリックして釘を打つ'
   }
@@ -1764,7 +1766,7 @@ function setDrawMode(mode) {
     panel.classList.add('open')
     canvas.style.cursor = 'crosshair'
   } else {
-    connectHint.textContent = ''
+    connectHint.textContent = DEFAULT_HINT
     panel.classList.remove('open')
     panel.classList.remove('spawn-panel-hidden')
     sizeRow.style.display = ''
@@ -1859,7 +1861,7 @@ function spawnBodyFromRect(type, cx, cy, w, h) {
     const r = Math.min(w, h) / 2
     b = Bodies.circle(cx, cy, r, opts)
   } else if (type === 'tri-eq') {
-    // vertices at angles 0, 2π/3, 4π/3 → bbox: width=R*1.5, height=R*√3
+    // vertices at angles π/3, π, 5π/3 (Bodies.polygon offset=theta/2) → bbox: width=R*1.5, height=R*√3
     const R = Math.min(w / 1.5, h / Math.sqrt(3))
     b = Bodies.polygon(cx, cy, 3, R, opts)
   } else {
@@ -2461,7 +2463,7 @@ Events.on(mouseConstraint, 'mousemove', (e) => {
     })
     if (paused) updateInfoPanel()
   }
-  if (drawMode) drawMousePos = { x: e.mouse.position.x, y: e.mouse.position.y }
+  if (drawMode) { const _dm = e.mouse.position; drawMousePos = gridSnapEnabled ? snapToGrid(_dm.x, _dm.y) : { x: _dm.x, y: _dm.y } }
   if (rectSelect) {
     rectSelect.x2 = e.mouse.position.x
     rectSelect.y2 = e.mouse.position.y
@@ -2602,7 +2604,8 @@ Events.on(mouseConstraint, 'mouseup', (e) => {
   if (Math.sqrt(dx * dx + dy * dy) > 5) return
 
   if (drawMode) {
-    const pos = e.mouse.position
+    const _rawPos = e.mouse.position
+    const pos = gridSnapEnabled ? snapToGrid(_rawPos.x, _rawPos.y) : _rawPos
     if (drawMode === 'tri-arb') {
       drawVertices.push({ x: pos.x, y: pos.y })
       if (drawVertices.length === 3) {
@@ -3140,9 +3143,11 @@ Events.on(render, 'afterRender', () => {
       ctx.stroke()
     } else if (spawnMode === 'tri-eq') {
       const R = Math.min(w / 1.5, h / Math.sqrt(3))
+      const theta = 2 * Math.PI / 3
+      const offset = theta * 0.5
       ctx.beginPath()
       for (let i = 0; i < 3; i++) {
-        const a = i * 2 * Math.PI / 3
+        const a = offset + i * theta
         const px = cx + R * Math.cos(a)
         const py = cy + R * Math.sin(a)
         i === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py)
@@ -3389,8 +3394,8 @@ Events.on(engine, 'beforeUpdate', () => {
     }
   })
 
-  // Grid snap: force dragged body to grid position each physics step
-  if (gridSnapEnabled && mouseConstraint.body && !mouseConstraint.body.isStatic) {
+  // Grid snap: force dragged body to grid position each physics step (pause only)
+  if (paused && gridSnapEnabled && mouseConstraint.body && !mouseConstraint.body.isStatic) {
     const b = mouseConstraint.body
     Body.setPosition(b, snapToGrid(b.position.x, b.position.y))
   }

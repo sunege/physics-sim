@@ -209,9 +209,7 @@ button:hover {
 .hint-row {
   padding: 0 4px 2px;
 }
-.hint-row:has(#connect-hint:empty) {
-  display: none;
-}
+
 #connect-hint {
   font-size: 0.75rem;
   color: #e2b96f;
