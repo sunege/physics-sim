@@ -338,7 +338,7 @@ function getCanvasSize() {
 // Engine
 // ============================================================
 const engine = Engine.create()
-engine.constraintIterations = 10  // default 2 → improves chain rigidity (propagates corrections across linked constraints)
+engine.constraintIterations = 2  // default 2 → improves chain rigidity (propagates corrections across linked constraints)
 const { width, height } = getCanvasSize()
 
 // Mutable world bounds — updated when user changes space size
