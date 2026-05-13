@@ -1,5 +1,7 @@
 import './style.css'
 import Matter from 'matter-js'
+import decomp from 'poly-decomp'
+window.decomp = decomp
 
 const { Engine, Render, Runner, Bodies, Body, Composite, Mouse, MouseConstraint, Events, Query, Constraint } = Matter
 
@@ -143,6 +145,13 @@ document.querySelector('#app').innerHTML = `
       </div>
 
       <button id="btn-show-vel" class="toggle-btn" data-tooltip="速度ベクトルを表示">→ 速度</button>
+
+      <div class="toolbar-sep"></div>
+
+      <div class="tb-group">
+        <button id="btn-grid-snap" class="toggle-btn" data-tooltip="グリッドスナップ ON/OFF (G)">⊞ グリッド</button>
+        <input type="number" id="grid-size-input" min="5" max="200" step="5" value="20" class="num-input" data-tooltip="グリッドサイズ (world単位)">
+      </div>
     </div>
 
     <div class="tb-row hint-row">
@@ -569,6 +578,20 @@ let mouseDownPos   = null
 let rectSelect     = null  // { x1, y1, x2, y2 } while dragging
 let spawnDrag      = null  // { x1, y1, x2, y2 } while drag-spawning
 const SPEED_HISTORY = 150
+
+// ============================================================
+// Grid snap state
+// ============================================================
+let gridSnapEnabled = false
+let gridSize        = 20
+
+function snapToGrid(x, y) {
+  if (!gridSnapEnabled) return { x, y }
+  return {
+    x: Math.round(x / gridSize) * gridSize,
+    y: Math.round(y / gridSize) * gridSize,
+  }
+}
 let speedBuffer = []
 
 function fmt(n, d = 2) { return Number(n).toFixed(d) }
@@ -673,7 +696,7 @@ function syncSliders(body) {
 function clearMultiSelect() {
   selectedBodies.forEach(b => {
     b.render.strokeStyle = b._msOrigStroke
-    b.render.lineWidth   = 0
+    b.render.lineWidth   = 1
     delete b._msOrigStroke
   })
   selectedBodies = []
@@ -686,7 +709,7 @@ function selectBody(body) {
   clearConstraintSelect()
   if (selectedBody) {
     selectedBody.render.strokeStyle = originalStroke
-    selectedBody.render.lineWidth   = 0
+    selectedBody.render.lineWidth   = 1
   }
   selectedBody = body
   speedBuffer  = []
@@ -731,7 +754,7 @@ function setMultiSelect(bodies) {
   // clear single select
   if (selectedBody) {
     selectedBody.render.strokeStyle = originalStroke
-    selectedBody.render.lineWidth   = 0
+    selectedBody.render.lineWidth   = 1
     selectedBody = null
     speedBuffer  = []
   }
@@ -878,7 +901,7 @@ const spawnParams = { size: 80, sizeCircle: 40, sizeBox: 80, sizeTri: 40, height
 let drawMode     = null   // null | 'tri-eq' | 'tri-arb' | 'polygon'
 let drawVertices = []
 let drawMousePos = null
-const MAX_POLY_VERTS = 8
+const MAX_POLY_VERTS = 12
 const CLOSE_DIST     = 15
 let showAllVelocities = false
 let showCOM = false
@@ -897,7 +920,14 @@ function dynamicBodies() {
     _dynBodiesCache = Composite.allBodies(engine.world).filter(b => !b.isStatic)
   return _dynBodiesCache
 }
-Events.on(engine.world, 'afterAdd',    () => { _dynBodiesCache = null })
+Events.on(engine.world, 'afterAdd', (event) => {
+  _dynBodiesCache = null
+  const obj = event.object
+  if (obj.type === 'body' && !obj.isStatic) {
+    obj.render.strokeStyle = 'rgba(0,0,0,0.3)'
+    obj.render.lineWidth   = 1
+  }
+})
 Events.on(engine.world, 'afterRemove', () => { _dynBodiesCache = null })
 let pauseForceRotLock = false
 
@@ -1031,6 +1061,7 @@ function instantiateBodies(specs) {
       const cy = spec.vertices.reduce((s, v) => s + v.y, 0) / spec.vertices.length
       const local = spec.vertices.map(v => ({ x: v.x - cx, y: v.y - cy }))
       b = Bodies.fromVertices(cx, cy, local, { ...opts, label: 'Polygon Body' })
+      if (b) setOriginalVertices(b, spec.vertices)
     }
     return b
   }).filter(Boolean)
@@ -1245,7 +1276,7 @@ function captureSnapshot() {
       return { type: 'rectangle', x: b.position.x, y: b.position.y,
                w: b._w, h: b._h, angle: b.angle, noCollision, ...base }
     } else {
-      return { type: 'polygon', vertices: b.vertices.map(v => ({ x: v.x, y: v.y })), noCollision, ...base }
+      return { type: 'polygon', vertices: polyWorldVerts(b), noCollision, ...base }
     }
   })
 
@@ -1314,6 +1345,7 @@ function restoreSnapshot(snap) {
       const cy = spec.vertices.reduce((s, v) => s + v.y, 0) / spec.vertices.length
       const local = spec.vertices.map(v => ({ x: v.x - cx, y: v.y - cy }))
       b = Bodies.fromVertices(cx, cy, local, { ...opts, label: 'Polygon Body' })
+      if (b) setOriginalVertices(b, spec.vertices)
     }
     if (b) {
       Body.setMass(b, spec.mass)
@@ -1403,9 +1435,7 @@ function exportScene() {
       return { type: 'rectangle', x: b.position.x, y: b.position.y,
                w: b._w, h: b._h, options: { ...baseOpts, angle: b.angle } }
     } else {
-      // polygon: export world vertex positions for exact shape reconstruction
-      const vertices = b.vertices.map(v => ({ x: v.x, y: v.y }))
-      return { type: 'polygon', vertices, options: baseOpts }
+      return { type: 'polygon', vertices: polyWorldVerts(b), options: baseOpts }
     }
   })
 
@@ -1471,7 +1501,7 @@ function copySelected() {
     }
     if (b.label === 'Circle Body') return { ...base, type: 'circle', radius: b.circleRadius }
     if (b._w !== undefined) return { ...base, type: 'rectangle', w: b._w, h: b._h }
-    return { ...base, type: 'polygon', vertices: b.vertices.map(v => ({ x: v.x, y: v.y })) }
+    return { ...base, type: 'polygon', vertices: polyWorldVerts(b) }
   })
 
   const constraints = allConstraints()
@@ -1527,6 +1557,10 @@ function pasteClipboard(worldPos) {
       const origCy = spec.vertices.reduce((s, v) => s + v.y, 0) / spec.vertices.length
       const local = spec.vertices.map(v => ({ x: v.x - origCx, y: v.y - origCy }))
       b = Bodies.fromVertices(x, y, local, { ...opts, label: 'Polygon Body' })
+      if (b) {
+        const pastedVerts = spec.vertices.map(v => ({ x: v.x + (x - origCx), y: v.y + (y - origCy) }))
+        setOriginalVertices(b, pastedVerts)
+      }
     }
     if (b) {
       Body.setMass(b, spec.mass)
@@ -1595,6 +1629,15 @@ document.getElementById('file-import').addEventListener('change', (e) => {
 document.getElementById('btn-show-vel').addEventListener('click', () => {
   showAllVelocities = !showAllVelocities
   document.getElementById('btn-show-vel').classList.toggle('active', showAllVelocities)
+})
+
+document.getElementById('btn-grid-snap').addEventListener('click', () => {
+  gridSnapEnabled = !gridSnapEnabled
+  document.getElementById('btn-grid-snap').classList.toggle('active', gridSnapEnabled)
+})
+document.getElementById('grid-size-input').addEventListener('change', (e) => {
+  const v = parseInt(e.target.value)
+  if (v >= 5 && v <= 200) gridSize = v
 })
 
 // ============================================================
@@ -1692,7 +1735,7 @@ function setPinMode(active) {
 function cancelConnectFirst() {
   if (connectFirst) {
     connectFirst.render.strokeStyle = connectFirstStroke
-    connectFirst.render.lineWidth   = 0
+    connectFirst.render.lineWidth   = 1
     connectFirst = null
     connectFirstPoint = null
   }
@@ -1861,18 +1904,43 @@ document.getElementById('spawn-collision').addEventListener('change', e => {
   spawnParams.noCollision = !e.target.checked
 })
 
-function isConvexAddition(verts, newPt) {
-  const pts = [...verts, newPt]
-  if (pts.length < 3) return true
-  let sign = 0
-  for (let i = 0; i < pts.length; i++) {
-    const a = pts[i], b = pts[(i + 1) % pts.length], c = pts[(i + 2) % pts.length]
-    const cross = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x)
-    if (Math.abs(cross) < 0.001) continue
-    if (sign === 0) sign = Math.sign(cross)
-    else if (Math.sign(cross) !== sign) return false
+function segmentsIntersect(a, b, c, d) {
+  const cross = (p, q, r) => (q.x - p.x) * (r.y - p.y) - (q.y - p.y) * (r.x - p.x)
+  const d1 = cross(c, d, a), d2 = cross(c, d, b)
+  const d3 = cross(a, b, c), d4 = cross(a, b, d)
+  return ((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) && ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0))
+}
+
+function hasSelfIntersection(verts, newPt) {
+  const n = verts.length
+  if (n < 2) return false
+  for (let i = 0; i < n - 2; i++) {
+    if (segmentsIntersect(verts[n - 1], newPt, verts[i], verts[i + 1])) return true
   }
-  return true
+  if (n >= 3) {
+    for (let i = 1; i < n - 1; i++) {
+      if (segmentsIntersect(newPt, verts[0], verts[i], verts[i + 1])) return true
+    }
+  }
+  return false
+}
+
+function polyWorldVerts(b) {
+  if (b._originalVertices) {
+    const cos = Math.cos(b.angle), sin = Math.sin(b.angle)
+    return b._originalVertices.map(v => ({
+      x: b.position.x + v.x * cos - v.y * sin,
+      y: b.position.y + v.x * sin + v.y * cos
+    }))
+  }
+  return b.vertices.map(v => ({ x: v.x, y: v.y }))
+}
+
+function setOriginalVertices(body, worldVerts) {
+  body._originalVertices = worldVerts.map(v => ({
+    x: v.x - body.position.x,
+    y: v.y - body.position.y
+  }))
 }
 
 function finalizePolygon(verts) {
@@ -1890,6 +1958,7 @@ function finalizePolygon(verts) {
     render: { fillStyle: nextColor() }
   })
   if (body) {
+    setOriginalVertices(body, verts)
     Body.setMass(body, spawnParams.mass)
     Composite.add(engine.world, body)
     if (paused) {
@@ -1901,7 +1970,7 @@ function finalizePolygon(verts) {
   drawVertices = []
   drawMousePos = null
   connectHint.textContent = drawMode === 'tri-arb' ? '頂点1をクリック (3点)'
-                          : '頂点をクリック (最大8点, Enterまたは始点で閉じる)'
+                          : '頂点をクリック (最大12点, Enterまたは始点で閉じる)'
 }
 
 document.querySelectorAll('.type-btn:not(.attach-btn)').forEach(btn => {
@@ -1983,6 +2052,7 @@ function queryPointByZ(bodies, pos) {
 }
 
 function handleConnect(pos, shift) {
+  const aPos = gridSnapEnabled ? { x: snapToGrid(pos.x, pos.y).x, y: snapToGrid(pos.x, pos.y).y } : pos
   const all = Composite.allBodies(engine.world).filter(b => !b.isStatic)
   const hit = queryPointByZ(all, pos)
 
@@ -2012,7 +2082,7 @@ function handleConnect(pos, shift) {
   }
 
   if (!connectFirst) {
-    if (hit.length === 0) return
+    if (hit.length === 0) { setConnectMode(false); return }
     // Normal click: select first body (use locked body if available)
     const target = connectHoverBody ?? hit[0]
     if (!target) return
@@ -2020,7 +2090,7 @@ function handleConnect(pos, shift) {
     connectFirstStroke = target.render.strokeStyle
     target.render.strokeStyle = '#e2b96f'
     target.render.lineWidth   = 3
-    connectFirstPoint  = computeAttachPoint(target, pos, attachMode).local
+    connectFirstPoint  = computeAttachPoint(target, aPos, attachMode).local
     const n = hit.length
     connectHint.textContent = n > 1
       ? `${n}個重複 — 右クリックで切替 / クリックで接続`
@@ -2041,7 +2111,7 @@ function handleConnect(pos, shift) {
 
   let c
   if (target) {
-    const attach  = computeAttachPoint(target, pos, attachMode)
+    const attach  = computeAttachPoint(target, aPos, attachMode)
     const pBworld = attach.world
     const dx = pBworld.x - pAworld.x, dy = pBworld.y - pAworld.y
     if (connectType === 'spring') {
@@ -2065,11 +2135,11 @@ function handleConnect(pos, shift) {
       })
     }
   } else {
-    const dx = pos.x - pAworld.x, dy = pos.y - pAworld.y
+    const dx = aPos.x - pAworld.x, dy = aPos.y - pAworld.y
     if (connectType === 'spring') {
       c = Constraint.create({
         bodyA: connectFirst, pointA: springPointA,
-        pointB: { x: pos.x, y: pos.y },
+        pointB: { x: aPos.x, y: aPos.y },
         length: Math.hypot(dx, dy),
         stiffness: 0,
         label: 'spring', render: { visible: false },
@@ -2078,7 +2148,7 @@ function handleConnect(pos, shift) {
     } else {
       c = Constraint.create({
         bodyA: connectFirst, pointA: jointPointA,
-        pointB: { x: pos.x, y: pos.y },
+        pointB: { x: aPos.x, y: aPos.y },
         length: Math.hypot(dx, dy),
         stiffness: 1, label: 'joint',
         render: { visible: false },
@@ -2105,9 +2175,10 @@ function _placePin(body, worldPt) {
 }
 
 function handlePin(pos, isRightClick) {
+  const aPos = gridSnapEnabled ? { x: snapToGrid(pos.x, pos.y).x, y: snapToGrid(pos.x, pos.y).y } : pos
   const all = Composite.allBodies(engine.world).filter(b => !b.isStatic)
   const hit = queryPointByZ(all, pos)
-  if (hit.length === 0) return
+  if (hit.length === 0) { setPinMode(false); return }
 
   if (isRightClick) {
     const THRESH = 15 / camera.scale
@@ -2134,8 +2205,8 @@ function handlePin(pos, isRightClick) {
     for (let i = 0; i < hit.length - 1; i++) {
       const bA = hit[i], bB = hit[i + 1]
       const c = Constraint.create({
-        bodyA: bA, pointA: { x: pos.x - bA.position.x, y: pos.y - bA.position.y },
-        bodyB: bB, pointB: { x: pos.x - bB.position.x, y: pos.y - bB.position.y },
+        bodyA: bA, pointA: { x: aPos.x - bA.position.x, y: aPos.y - bA.position.y },
+        bodyB: bB, pointB: { x: aPos.x - bB.position.x, y: aPos.y - bB.position.y },
         length: 0, stiffness: 1, label: 'pin',
         render: { visible: false },
       })
@@ -2143,7 +2214,7 @@ function handlePin(pos, isRightClick) {
       addConstraint(c)
     }
   } else {
-    const attach = computeAttachPoint(target, pos, attachMode)
+    const attach = computeAttachPoint(target, aPos, attachMode)
     _placePin(target, attach.world)
   }
 }
@@ -2323,8 +2394,7 @@ Events.on(mouseConstraint, 'mousemove', (e) => {
   // Pause drag: move grabbed body and propagate delta to multi-select and bg constraints
   if (paused && pauseDragBody) {
     const pos     = e.mouse.position
-    const targetX = pos.x + pauseDragOffset.x
-    const targetY = pos.y + pauseDragOffset.y
+    const { x: targetX, y: targetY } = snapToGrid(pos.x + pauseDragOffset.x, pos.y + pauseDragOffset.y)
     const dx = targetX - pauseDragBody.position.x
     const dy = targetY - pauseDragBody.position.y
     Body.setPosition(pauseDragBody, { x: targetX, y: targetY })
@@ -2520,9 +2590,11 @@ Events.on(mouseConstraint, 'mouseup', (e) => {
     const sw = sd ? Math.abs(sd.x2 - sd.x1) : 0
     const sh = sd ? Math.abs(sd.y2 - sd.y1) : 0
     if (sw > 10 || sh > 10) {
-      spawnBodyFromRect(spawnMode, (sd.x1 + sd.x2) / 2, (sd.y1 + sd.y2) / 2, sw, sh)
+      const { x: cx, y: cy } = snapToGrid((sd.x1 + sd.x2) / 2, (sd.y1 + sd.y2) / 2)
+      spawnBodyFromRect(spawnMode, cx, cy, sw, sh)
     } else {
-      spawnBody(spawnMode, e.mouse.position.x, e.mouse.position.y)
+      const { x: sx, y: sy } = snapToGrid(e.mouse.position.x, e.mouse.position.y)
+      spawnBody(spawnMode, sx, sy)
     }
     return
   }
@@ -2552,8 +2624,8 @@ Events.on(mouseConstraint, 'mouseup', (e) => {
         finalizePolygon(drawVertices)
         return
       }
-      if (!isConvexAddition(drawVertices, pos)) {
-        connectHint.textContent = '凸でない頂点は追加できません'
+      if (hasSelfIntersection(drawVertices, pos)) {
+        connectHint.textContent = '自己交差する頂点は追加できません'
         return
       }
       drawVertices.push({ x: pos.x, y: pos.y })
@@ -2633,7 +2705,11 @@ window.addEventListener('keydown', (e) => {
     e.preventDefault(); copySelected(); return
   }
   if ((e.metaKey || e.ctrlKey) && e.key === 'v') {
-    e.preventDefault(); pasteClipboard(lastMouseWorldPos); return
+    e.preventDefault(); const { x: _px, y: _py } = snapToGrid(lastMouseWorldPos.x, lastMouseWorldPos.y); pasteClipboard({ x: _px, y: _py }); return
+  }
+  if (e.key === 'g' || e.key === 'G') {
+    gridSnapEnabled = !gridSnapEnabled
+    document.getElementById('btn-grid-snap').classList.toggle('active', gridSnapEnabled)
   }
   if (e.key === 'c' || e.key === 'C') {
     setConnectMode(!connectMode)
@@ -2909,13 +2985,44 @@ Events.on(render, 'afterRender', () => {
   ctx.save()
   ctx.setTransform(camera.scale, 0, 0, camera.scale, camera.offsetX, camera.offsetY)
 
+  // Grid snap overlay (drawn first, behind everything)
+  if (gridSnapEnabled) {
+    const minScreenSpacing = 20
+    let gs = gridSize
+    while (gs * camera.scale < minScreenSpacing) gs *= 2
+    const b = render.bounds
+    const x0 = Math.floor(b.min.x / gs) * gs
+    const y0 = Math.floor(b.min.y / gs) * gs
+    ctx.strokeStyle = 'rgba(180,180,180,0.18)'
+    ctx.lineWidth = 1 / camera.scale
+    ctx.beginPath()
+    for (let x = x0; x <= b.max.x; x += gs) { ctx.moveTo(x, b.min.y); ctx.lineTo(x, b.max.y) }
+    for (let y = y0; y <= b.max.y; y += gs) { ctx.moveTo(b.min.x, y); ctx.lineTo(b.max.x, y) }
+    ctx.stroke()
+  }
+
   // World boundary lines
   ctx.strokeStyle = 'rgba(100, 140, 220, 0.75)'
   ctx.lineWidth = 4 / camera.scale
   ctx.strokeRect(worldBounds.left, worldBounds.top, worldBounds.right - worldBounds.left, worldBounds.bottom - worldBounds.top)
 
-  // Constraints
+  // Circle rotation indicator
   const vMin = render.bounds.min, vMax = render.bounds.max
+  ctx.strokeStyle = 'rgba(0,0,0,0.4)'
+  ctx.lineWidth   = 1 / camera.scale
+  dynamicBodies().forEach(b => {
+    if (b.label !== 'Circle Body') return
+    if (b.position.x + b.circleRadius < vMin.x || b.position.x - b.circleRadius > vMax.x ||
+        b.position.y + b.circleRadius < vMin.y || b.position.y - b.circleRadius > vMax.y) return
+    const ex = b.position.x + b.circleRadius * Math.cos(b.angle)
+    const ey = b.position.y + b.circleRadius * Math.sin(b.angle)
+    ctx.beginPath()
+    ctx.moveTo(b.position.x, b.position.y)
+    ctx.lineTo(ex, ey)
+    ctx.stroke()
+  })
+
+  // Constraints
   springs.forEach(c => {
     const { pA, pB } = constraintWorldPoints(c)
     if (Math.min(pA.x, pB.x) > vMax.x || Math.max(pA.x, pB.x) < vMin.x ||
@@ -3281,6 +3388,12 @@ Events.on(engine, 'beforeUpdate', () => {
       }
     }
   })
+
+  // Grid snap: force dragged body to grid position each physics step
+  if (gridSnapEnabled && mouseConstraint.body && !mouseConstraint.body.isStatic) {
+    const b = mouseConstraint.body
+    Body.setPosition(b, snapToGrid(b.position.x, b.position.y))
+  }
 })
 
 Events.on(engine, 'afterUpdate', () => {
