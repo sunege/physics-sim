@@ -454,6 +454,17 @@ window.addEventListener('mouseup', () => {
   }
 })
 
+// Runner 停止中でも MouseConstraint イベントが発火するよう Engine.update を1回叩く
+function pauseTick() {
+  const saved = mouseConstraint.constraint.stiffness
+  mouseConstraint.constraint.stiffness = 0
+  Engine.update(engine, 16)
+  mouseConstraint.constraint.stiffness = saved
+}
+canvas.addEventListener('mousedown', () => { if (paused) pauseTick() })
+canvas.addEventListener('mousemove', () => { if (paused) pauseTick() })
+canvas.addEventListener('mouseup',   () => { if (paused) pauseTick() })
+
 // ============================================================
 // Rotation handle state
 // ============================================================
@@ -604,6 +615,43 @@ function updatePanelSide(worldX) {
   infoPanel.classList.toggle('panel-left', _panelOnLeft)
 }
 
+function updateInfoPanel() {
+  if (selectedBody) {
+    updatePanelSide(selectedBody.position.x)
+  } else if (selectedBodies.length > 0) {
+    const avgX = selectedBodies.reduce((s, b) => s + b.position.x, 0) / selectedBodies.length
+    updatePanelSide(avgX)
+  } else if (selectedConstraint) {
+    const { pA, pB } = constraintWorldPoints(selectedConstraint)
+    updatePanelSide((pA.x + pB.x) / 2)
+  }
+
+  if (!selectedBody) return
+  const b   = selectedBody
+  const buf = paused ? (velocityBuffer.get(b) ?? { vx: 0, vy: 0, av: 0 }) : null
+  const vx  = buf ? buf.vx : b.velocity.x
+  const vy  = buf ? buf.vy : b.velocity.y
+  const av  = buf ? buf.av : b.angularVelocity
+  const speed = Math.hypot(vx, vy)
+  const ke    = 0.5 * b.mass * speed * speed
+
+  speedBuffer.push(speed)
+  if (speedBuffer.length > SPEED_HISTORY) speedBuffer.shift()
+
+  elPType.textContent    = getBodyType(b)
+  elPX.textContent       = fmt(b.position.x) + ' px'
+  elPY.textContent       = fmt(b.position.y) + ' px'
+  elPAngle.textContent   = fmt(b.angle * 180 / Math.PI) + ' °'
+  elPVx.textContent      = fmt(vx) + ' px/s'
+  elPVy.textContent      = fmt(vy) + ' px/s'
+  elPSpeed.textContent   = fmt(speed) + ' px/s'
+  elPAngV.textContent    = fmt(av, 4) + ' rad/s'
+  elPKE.textContent      = fmt(ke, 1)
+  elPInertia.textContent = fmt(b.inertia, 1)
+
+  drawSpeedGraph()
+}
+
 function getTargets() {
   return selectedBody ? [selectedBody] : selectedBodies
 }
@@ -671,6 +719,7 @@ function selectBody(body) {
       document.getElementById('s-height').value = h
       document.getElementById('n-height').value = h
     }
+    updateInfoPanel()
   } else {
     infoPanel.classList.add('hidden')
   }
@@ -700,6 +749,7 @@ function setMultiSelect(bodies) {
   document.getElementById('body-params').classList.remove('hidden')
   document.getElementById('panel-title').textContent = `${bodies.length}個選択中`
   syncSliders(bodies[0])
+  updateInfoPanel()
 }
 
 function clearConstraintSelect() {
@@ -800,6 +850,7 @@ function selectConstraint(c) {
     document.getElementById('s-motor-torque').value = torq
     document.getElementById('v-motor-torque').textContent = torq.toFixed(3)
   }
+  updateInfoPanel()
 }
 
 function pointToSegmentDist(px, py, ax, ay, bx, by) {
@@ -838,6 +889,8 @@ const VEL_SCALE       = 30
 const VEL_TIP_RADIUS  = 12
 const velocityBuffer  = new Map()  // body → { vx, vy, av }
 const pauseRotBuffer  = new Map()  // body → { wasLocked, origInertia }
+let pauseDragBody   = null         // body grabbed during pause
+let pauseDragOffset = { x: 0, y: 0 } // world-space offset: body.position - mouse
 
 let _dynBodiesCache = null
 function dynamicBodies() {
@@ -855,15 +908,17 @@ function togglePause() {
   document.getElementById('btn-pause').classList.toggle('active', paused)
   document.getElementById('btn-pause').textContent = paused ? '▶ 再開' : '⏸ 停止'
   if (paused) {
+    Runner.stop(runner)
     Composite.allBodies(engine.world).forEach(b => {
       if (b.isStatic) return
       velocityBuffer.set(b, { vx: b.velocity.x, vy: b.velocity.y, av: b.angularVelocity })
       const wasLocked   = !!b._rotLocked
       const origInertia = wasLocked ? (b._origInertia ?? b.inertia) : b.inertia
       pauseRotBuffer.set(b, { wasLocked, origInertia })
+      Body.setVelocity(b, { x: 0, y: 0 })
+      Body.setAngularVelocity(b, 0)
       if (!wasLocked && pauseForceRotLock) {
         Body.setInertia(b, Infinity)
-        Body.setAngularVelocity(b, 0)
       }
     })
   } else {
@@ -871,6 +926,7 @@ function togglePause() {
       if (data.wasLocked) {
         b._rotLocked    = true
         b._origInertia  = data.origInertia
+        Body.setInertia(b, Infinity)
       } else {
         b._rotLocked    = false
         b._origInertia  = null
@@ -883,6 +939,7 @@ function togglePause() {
       Body.setAngularVelocity(b, vel.av)
     })
     velocityBuffer.clear()
+    Runner.run(runner, engine)
   }
 }
 
@@ -2144,6 +2201,19 @@ Events.on(mouseConstraint, 'mousedown', (e) => {
     }
   }
 
+  // Pause drag: grab body via Query.point (Runner is stopped, so mouseConstraint won't move it)
+  if (paused && !connectMode && !drawMode) {
+    const movable = Composite.allBodies(engine.world).filter(b => !b.isStatic)
+    const hits = Query.point(movable, pos)
+    if (hits.length > 0) {
+      pauseDragBody   = hits[0]
+      pauseDragOffset = { x: pauseDragBody.position.x - pos.x, y: pauseDragBody.position.y - pos.y }
+      mouseConstraint.body = null
+      mouse.button = -1
+      return
+    }
+  }
+
   // Start rectangle select when clicking empty space (not in connect or draw mode)
   if (!connectMode && !drawMode) {
     const movable = Composite.allBodies(engine.world).filter(b => !b.isStatic)
@@ -2224,6 +2294,28 @@ Events.on(mouseConstraint, 'mousemove', (e) => {
     return
   }
 
+  // Pause drag: move grabbed body and propagate delta to multi-select and bg constraints
+  if (paused && pauseDragBody) {
+    const pos     = e.mouse.position
+    const targetX = pos.x + pauseDragOffset.x
+    const targetY = pos.y + pauseDragOffset.y
+    const dx = targetX - pauseDragBody.position.x
+    const dy = targetY - pauseDragBody.position.y
+    Body.setPosition(pauseDragBody, { x: targetX, y: targetY })
+    if (selectedBodies.length > 1 && selectedBodies.includes(pauseDragBody)) {
+      selectedBodies.forEach(b => {
+        if (b === pauseDragBody || b.isStatic) return
+        Body.setPosition(b, { x: b.position.x + dx, y: b.position.y + dy })
+      })
+    }
+    selectedBgConstraints.forEach(({ c, fixedEnd }) => {
+      if (fixedEnd === 'A') { c.pointA.x += dx; c.pointA.y += dy }
+      else                  { c.pointB.x += dx; c.pointB.y += dy }
+    })
+    updateInfoPanel()
+    return
+  }
+
   // Hover detection for rotation handle
   const _hvTargets = getTargets().filter(b => !b.isStatic)
   if (_hvTargets.length > 0 && !connectMode && !drawMode && !spawnMode && !pinMode) {
@@ -2271,6 +2363,7 @@ Events.on(mouseConstraint, 'mousemove', (e) => {
       const cur = velocityBuffer.get(b) ?? { av: 0 }
       velocityBuffer.set(b, { vx: newVx, vy: newVy, av: cur.av })
     })
+    if (paused) updateInfoPanel()
   }
   if (drawMode) drawMousePos = { x: e.mouse.position.x, y: e.mouse.position.y }
   if (rectSelect) {
@@ -2339,6 +2432,14 @@ Events.on(mouseConstraint, 'mousemove', (e) => {
 })
 
 Events.on(mouseConstraint, 'mouseup', (e) => {
+  if (pauseDragBody) {
+    const wasDrag = mouseDownPos &&
+      Math.hypot(e.mouse.position.x - mouseDownPos.x, e.mouse.position.y - mouseDownPos.y) > 5
+    pauseDragBody   = null
+    pauseDragOffset = { x: 0, y: 0 }
+    if (wasDrag) return  // genuine drag: skip click/select logic
+    // click (minimal movement): fall through to body selection below
+  }
   if (resizeDragging) {
     resizeDragging = false
     resizeDragHandle = null
@@ -2545,6 +2646,7 @@ window.addEventListener('keydown', (e) => {
         Body.setPosition(b, { x: b.position.x + dx, y: b.position.y + dy })
         Body.setVelocity(b, { x: 0, y: 0 })
       })
+      updateInfoPanel()
     } else {
       arrowKeysDown.add(e.key)
     }
@@ -3078,16 +3180,6 @@ function jointReachable(from) {
 
 // Apply Hooke's law spring force each step (force-based, energy-conserving in Verlet)
 Events.on(engine, 'beforeUpdate', () => {
-  // Pause-drag: temporarily zero stiffness of bg-fixed constraints so they don't fight the mouse
-  if (paused && selectedBgConstraints.length > 0) {
-    const drag = mouseConstraint.body
-    if (drag && (drag === selectedBody || (selectedBodies.length > 1 && selectedBodies.includes(drag)))) {
-      selectedBgConstraints.forEach(({ c }) => {
-        if (c._pauseDragSavedStiffness === undefined) c._pauseDragSavedStiffness = c.stiffness
-        c.stiffness = 0
-      })
-    }
-  }
   if (paused) return
   if (arrowKeysDown.size > 0) {
     let dx = 0, dy = 0
@@ -3141,92 +3233,13 @@ Events.on(engine, 'beforeUpdate', () => {
 
 Events.on(engine, 'afterUpdate', () => {
   if (paused) {
-    const dragging = mouseConstraint.body
-    const freeSet  = dragging ? jointReachable(dragging) : new Set()
-
-    // 一時停止中のドラッグ追従: 複数選択 or 矩形選択で背景固定端点を含む場合
-    const inMulti  = dragging && selectedBodies.length > 1 && selectedBodies.includes(dragging)
-    const inSingle = dragging && dragging === selectedBody && selectedBgConstraints.length > 0
-    if (inMulti || inSingle) {
-      // Restore stiffness saved in beforeUpdate (constraints were zeroed to prevent fighting the drag)
-      selectedBgConstraints.forEach(({ c }) => {
-        if (c._pauseDragSavedStiffness !== undefined) {
-          c.stiffness = c._pauseDragSavedStiffness
-          delete c._pauseDragSavedStiffness
-        }
-      })
-      const dx = dragging.position.x - dragging.positionPrev.x
-      const dy = dragging.position.y - dragging.positionPrev.y
-      if (Math.abs(dx) > 0.001 || Math.abs(dy) > 0.001) {
-        if (inMulti) {
-          selectedBodies.forEach(b => {
-            if (b === dragging || b.isStatic) return
-            Body.setPosition(b, { x: b.position.x + dx, y: b.position.y + dy })
-          })
-        }
-        selectedBgConstraints.forEach(({ c, fixedEnd }) => {
-          if (fixedEnd === 'A') { c.pointA.x += dx; c.pointA.y += dy }
-          else                  { c.pointB.x += dx; c.pointB.y += dy }
-        })
-      }
-      // Zero velocities to prevent oscillation caused by accumulated kinetic energy
-      if (inMulti) {
-        selectedBodies.forEach(b => {
-          if (b.isStatic) return
-          Body.setVelocity(b, { x: 0, y: 0 })
-          Body.setAngularVelocity(b, 0)
-        })
-      }
-      if (inSingle) {
-        Body.setVelocity(dragging, { x: 0, y: 0 })
-        Body.setAngularVelocity(dragging, 0)
-      }
-    }
-
     dynamicBodies().forEach(b => {
-      if (!freeSet.has(b)) {
-        Body.setVelocity(b, { x: 0, y: 0 })
-        Body.setAngularVelocity(b, 0)
-      }
+      Body.setVelocity(b, { x: 0, y: 0 })
+      Body.setAngularVelocity(b, 0)
     })
   }
 
-  // パネル表示位置をオブジェクトの現在位置に合わせて更新
-  if (selectedBody) {
-    updatePanelSide(selectedBody.position.x)
-  } else if (selectedBodies.length > 0) {
-    const avgX = selectedBodies.reduce((s, b) => s + b.position.x, 0) / selectedBodies.length
-    updatePanelSide(avgX)
-  } else if (selectedConstraint) {
-    const { pA, pB } = constraintWorldPoints(selectedConstraint)
-    updatePanelSide((pA.x + pB.x) / 2)
-  }
-
-  if (!selectedBody) return
-  if (paused && !mouseConstraint.body) return
-  const b   = selectedBody
-  const buf = paused ? (velocityBuffer.get(b) ?? { vx: 0, vy: 0, av: 0 }) : null
-  const vx  = buf ? buf.vx : b.velocity.x
-  const vy  = buf ? buf.vy : b.velocity.y
-  const av  = buf ? buf.av : b.angularVelocity
-  const speed = Math.hypot(vx, vy)
-  const ke    = 0.5 * b.mass * speed * speed
-
-  speedBuffer.push(speed)
-  if (speedBuffer.length > SPEED_HISTORY) speedBuffer.shift()
-
-  elPType.textContent    = getBodyType(b)
-  elPX.textContent       = fmt(b.position.x) + ' px'
-  elPY.textContent       = fmt(b.position.y) + ' px'
-  elPAngle.textContent   = fmt(b.angle * 180 / Math.PI) + ' °'
-  elPVx.textContent      = fmt(vx) + ' px/s'
-  elPVy.textContent      = fmt(vy) + ' px/s'
-  elPSpeed.textContent   = fmt(speed) + ' px/s'
-  elPAngV.textContent    = fmt(av, 4) + ' rad/s'
-  elPKE.textContent      = fmt(ke, 1)
-  elPInertia.textContent = fmt(b.inertia, 1)
-
-  drawSpeedGraph()
+  if (!paused || mouseConstraint.body) updateInfoPanel()
 })
 
 // ============================================================
@@ -3243,25 +3256,30 @@ document.getElementById('s-mass').addEventListener('input', (e) => {
   const val = parseFloat(e.target.value)
   getTargets().forEach(b => Body.setMass(b, val))
   document.getElementById('v-mass').textContent = fmt(val)
+  updateInfoPanel()
 })
 document.getElementById('s-restitution').addEventListener('input', (e) => {
   const val = parseFloat(e.target.value)
   getTargets().forEach(b => { b.restitution = val })
   document.getElementById('v-restitution').textContent = fmt(val)
+  updateInfoPanel()
 })
 document.getElementById('s-friction').addEventListener('input', (e) => {
   const val = parseFloat(e.target.value)
   getTargets().forEach(b => { b.friction = val })
   document.getElementById('v-friction').textContent = fmt(val)
+  updateInfoPanel()
 })
 document.getElementById('s-frictionair').addEventListener('input', (e) => {
   const val = parseFloat(e.target.value)
   getTargets().forEach(b => { b.frictionAir = val })
   document.getElementById('v-frictionair').textContent = fmt(val, 3)
+  updateInfoPanel()
 })
 document.getElementById('p-collision').addEventListener('change', e => {
   const filter = e.target.checked ? FILTER_BODY : FILTER_GHOST
   getTargets().forEach(b => { b.collisionFilter = { ...filter } })
+  updateInfoPanel()
 })
 document.getElementById('p-rot-lock').addEventListener('change', e => {
   if (!selectedBody) return
@@ -3271,9 +3289,13 @@ document.getElementById('p-rot-lock').addEventListener('change', e => {
       if (buf) buf.wasLocked = true
       selectedBody._rotLocked   = true
       selectedBody._origInertia = buf?.origInertia ?? selectedBody.inertia
+      Body.setInertia(selectedBody, Infinity)
+      Body.setAngularVelocity(selectedBody, 0)
     } else {
       if (buf) buf.wasLocked = false
       selectedBody._rotLocked = false
+      const restoreInertia = buf?.origInertia ?? selectedBody._origInertia
+      if (restoreInertia != null) Body.setInertia(selectedBody, restoreInertia)
     }
     return
   }
@@ -3538,6 +3560,7 @@ document.addEventListener('click', e => {
 // Start
 // ============================================================
 Render.run(render)
-Runner.run(Runner.create(), engine)
+const runner = Runner.create()
+Runner.run(runner, engine)
 applyCamera()
 togglePause()
