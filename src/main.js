@@ -1905,7 +1905,7 @@ function spawnBodyFromRect(type, cx, cy, w, h) {
   }
   let b
   if (type === 'circle') {
-    const r = Math.min(w, h) / 2
+    const r = Math.max(w, h) / 2
     b = Bodies.circle(cx, cy, r, opts)
   } else if (type === 'tri-eq') {
     // vertices at angles π/3, π, 5π/3 (Bodies.polygon offset=theta/2) → bbox: width=R*1.5, height=R*√3
@@ -2104,6 +2104,7 @@ function queryPointByZ(bodies, pos) {
 
 function handleConnect(pos, shift) {
   const aPos = gridSnapEnabled ? { x: snapToGrid(pos.x, pos.y).x, y: snapToGrid(pos.x, pos.y).y } : pos
+  const bodyAttachPos = (gridSnapEnabled && attachMode === 'free') ? aPos : pos
   const all = Composite.allBodies(engine.world).filter(b => !b.isStatic)
   const hit = queryPointByZ(all, pos)
 
@@ -2141,7 +2142,7 @@ function handleConnect(pos, shift) {
     connectFirstStroke = target.render.strokeStyle
     target.render.strokeStyle = '#e2b96f'
     target.render.lineWidth   = 3
-    connectFirstPoint  = computeAttachPoint(target, aPos, attachMode).local
+    connectFirstPoint  = computeAttachPoint(target, bodyAttachPos, attachMode).local
     const n = hit.length
     connectHint.textContent = n > 1
       ? `${n}個重複 — 右クリックで切替 / クリックで接続`
@@ -2162,7 +2163,7 @@ function handleConnect(pos, shift) {
 
   let c
   if (target) {
-    const attach  = computeAttachPoint(target, aPos, attachMode)
+    const attach  = computeAttachPoint(target, bodyAttachPos, attachMode)
     const pBworld = attach.world
     const dx = pBworld.x - pAworld.x, dy = pBworld.y - pAworld.y
     if (connectType === 'spring') {
@@ -2227,6 +2228,7 @@ function _placePin(body, worldPt) {
 
 function handlePin(pos, isRightClick) {
   const aPos = gridSnapEnabled ? { x: snapToGrid(pos.x, pos.y).x, y: snapToGrid(pos.x, pos.y).y } : pos
+  const bodyAttachPos = (gridSnapEnabled && attachMode === 'free') ? aPos : pos
   const all = Composite.allBodies(engine.world).filter(b => !b.isStatic)
   const hit = queryPointByZ(all, pos)
   if (hit.length === 0) { setPinMode(false); return }
@@ -2256,8 +2258,8 @@ function handlePin(pos, isRightClick) {
     for (let i = 0; i < hit.length - 1; i++) {
       const bA = hit[i], bB = hit[i + 1]
       const c = Constraint.create({
-        bodyA: bA, pointA: { x: aPos.x - bA.position.x, y: aPos.y - bA.position.y },
-        bodyB: bB, pointB: { x: aPos.x - bB.position.x, y: aPos.y - bB.position.y },
+        bodyA: bA, pointA: { x: bodyAttachPos.x - bA.position.x, y: bodyAttachPos.y - bA.position.y },
+        bodyB: bB, pointB: { x: bodyAttachPos.x - bB.position.x, y: bodyAttachPos.y - bB.position.y },
         length: 0, stiffness: 1, label: 'pin',
         render: { visible: false },
       })
@@ -2265,7 +2267,7 @@ function handlePin(pos, isRightClick) {
       addConstraint(c)
     }
   } else {
-    const attach = computeAttachPoint(target, aPos, attachMode)
+    const attach = computeAttachPoint(target, bodyAttachPos, attachMode)
     _placePin(target, attach.world)
   }
 }
@@ -2641,8 +2643,21 @@ Events.on(mouseConstraint, 'mouseup', (e) => {
     const sw = sd ? Math.abs(sd.x2 - sd.x1) : 0
     const sh = sd ? Math.abs(sd.y2 - sd.y1) : 0
     if (sw > 10 || sh > 10) {
-      const { x: cx, y: cy } = snapToGrid((sd.x1 + sd.x2) / 2, (sd.y1 + sd.y2) / 2)
-      spawnBodyFromRect(spawnMode, cx, cy, sw, sh)
+      if (gridSnapEnabled) {
+        const { x: cx, y: cy } = snapToGrid(sd.x1, sd.y1)
+        let halfW = Math.round(Math.abs(sd.x2 - cx) / gridSize) * gridSize
+        let halfH = Math.round(Math.abs(sd.y2 - cy) / gridSize) * gridSize
+        if (halfW === 0 && halfH === 0) {
+          spawnBody(spawnMode, cx, cy)
+        } else {
+          if (halfW === 0) halfW = halfH
+          if (halfH === 0) halfH = halfW
+          spawnBodyFromRect(spawnMode, cx, cy, halfW * 2, halfH * 2)
+        }
+      } else {
+        const { x: cx, y: cy } = snapToGrid((sd.x1 + sd.x2) / 2, (sd.y1 + sd.y2) / 2)
+        spawnBodyFromRect(spawnMode, cx, cy, sw, sh)
+      }
     } else {
       const { x: sx, y: sy } = snapToGrid(e.mouse.position.x, e.mouse.position.y)
       spawnBody(spawnMode, sx, sy)
@@ -3051,6 +3066,29 @@ Events.on(render, 'afterRender', () => {
     for (let x = x0; x <= b.max.x; x += gs) { ctx.moveTo(x, b.min.y); ctx.lineTo(x, b.max.y) }
     for (let y = y0; y <= b.max.y; y += gs) { ctx.moveTo(b.min.x, y); ctx.lineTo(b.max.x, y) }
     ctx.stroke()
+
+    // Grid snap cursor indicator
+    const showSnapMarker = (
+      (spawnMode !== null && spawnDrag === null) ||
+      (drawMode !== null && drawMousePos !== null) ||
+      (paused && mouseConstraint.body && !mouseConstraint.body.isStatic) ||
+      (connectMode && (!connectHoverBody || attachMode === 'free')) ||
+      (pinMode && (!pinHoverBody || attachMode === 'free'))
+    )
+    if (showSnapMarker) {
+      const snapPos = (drawMode && drawMousePos) ? drawMousePos : snapToGrid(lastMouseWorldPos.x, lastMouseWorldPos.y)
+      ctx.fillStyle = '#ffffff'
+      ctx.beginPath()
+      ctx.arc(snapPos.x, snapPos.y, 5 / camera.scale, 0, Math.PI * 2)
+      ctx.fill()
+    }
+    if (spawnDrag) {
+      const origin = snapToGrid(spawnDrag.x1, spawnDrag.y1)
+      ctx.fillStyle = '#ffffff'
+      ctx.beginPath()
+      ctx.arc(origin.x, origin.y, 5 / camera.scale, 0, Math.PI * 2)
+      ctx.fill()
+    }
   }
 
   // World boundary lines
@@ -3219,21 +3257,28 @@ Events.on(render, 'afterRender', () => {
   // Spawn drag preview
   if (spawnDrag) {
     const sd = spawnDrag
-    const x = Math.min(sd.x1, sd.x2)
-    const y = Math.min(sd.y1, sd.y2)
-    const w = Math.abs(sd.x2 - sd.x1)
-    const h = Math.abs(sd.y2 - sd.y1)
-    const cx = x + w / 2
-    const cy = y + h / 2
+    let cx, cy, w, h
+    if (gridSnapEnabled) {
+      const snapped = snapToGrid(sd.x1, sd.y1)
+      cx = snapped.x; cy = snapped.y
+      let halfW = Math.round(Math.abs(sd.x2 - cx) / gridSize) * gridSize
+      let halfH = Math.round(Math.abs(sd.y2 - cy) / gridSize) * gridSize
+      if (halfW === 0) halfW = halfH
+      if (halfH === 0) halfH = halfW
+      w = halfW * 2; h = halfH * 2
+    } else {
+      w = Math.abs(sd.x2 - sd.x1); h = Math.abs(sd.y2 - sd.y1)
+      cx = Math.min(sd.x1, sd.x2) + w / 2; cy = Math.min(sd.y1, sd.y2) + h / 2
+    }
     ctx.strokeStyle = '#ffcc00'
     ctx.lineWidth   = 1.5 / camera.scale
     ctx.setLineDash([5 / camera.scale, 3 / camera.scale])
     ctx.fillStyle   = 'rgba(255,204,0,0.08)'
     if (spawnMode === 'box') {
-      ctx.strokeRect(x, y, w, h)
-      ctx.fillRect(x, y, w, h)
+      ctx.strokeRect(cx - w / 2, cy - h / 2, w, h)
+      ctx.fillRect(cx - w / 2, cy - h / 2, w, h)
     } else if (spawnMode === 'circle') {
-      const r = Math.min(w, h) / 2
+      const r = Math.max(w, h) / 2
       ctx.beginPath()
       ctx.arc(cx, cy, r, 0, Math.PI * 2)
       ctx.fill()
