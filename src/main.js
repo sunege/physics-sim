@@ -1064,11 +1064,14 @@ function instantiateBodies(specs) {
     const opts = {
       collisionFilter: { ...(spec.noCollision ? FILTER_GHOST : FILTER_BODY) },
       ...(spec.options ?? {}),
-      render: { fillStyle: nextColor() }
+      render: { fillStyle: spec.fillStyle ?? nextColor() }
     }
+    if (spec.restitution != null) opts.restitution = spec.restitution
+    if (spec.frictionAir != null) opts.frictionAir = spec.frictionAir
+    if (spec.friction    != null) opts.friction    = spec.friction
     let b
     if (spec.type === 'rectangle') {
-      b = Bodies.rectangle(spec.x, spec.y, spec.w, spec.h, opts)
+      b = Bodies.rectangle(spec.x, spec.y, spec.w, spec.h, { ...opts, angle: spec.angle ?? 0 })
       b._w = spec.w
       b._h = spec.h
     } else if (spec.type === 'circle') {
@@ -1081,6 +1084,10 @@ function instantiateBodies(specs) {
       const local = spec.vertices.map(v => ({ x: v.x - cx, y: v.y - cy }))
       b = Bodies.fromVertices(cx, cy, local, { ...opts, label: 'Polygon Body' })
       if (b) setOriginalVertices(b, spec.vertices)
+    }
+    if (b) {
+      if (spec.mass != null) Body.setMass(b, spec.mass)
+      if (spec._rotLocked) { b._rotLocked = true; b._origInertia = b.inertia; Body.setInertia(b, Infinity) }
     }
     return b
   }).filter(Boolean)
@@ -1284,6 +1291,7 @@ function captureSnapshot() {
       friction: b.friction,
       mass: b.mass,
       fillStyle: b.render.fillStyle,
+      _rotLocked: !!b._rotLocked,
       vx: buf ? buf.vx : b.velocity.x,
       vy: buf ? buf.vy : b.velocity.y,
       angularVelocity: buf ? buf.av : b.angularVelocity,
@@ -1373,6 +1381,7 @@ function restoreSnapshot(snap) {
       Body.setMass(b, spec.mass)
       Body.setVelocity(b, { x: spec.vx, y: spec.vy })
       Body.setAngularVelocity(b, spec.angularVelocity)
+      if (spec._rotLocked) { b._rotLocked = true; b._origInertia = b.inertia; Body.setInertia(b, Infinity) }
     }
     return b
   }).filter(Boolean)
@@ -1449,15 +1458,23 @@ function exportScene() {
   const idToIndex = new Map(allBodies.map((b, i) => [b.id, i]))
 
   const bodies = allBodies.map(b => {
-    const baseOpts = { restitution: b.restitution, frictionAir: b.frictionAir }
+    const base = {
+      restitution: b.restitution,
+      frictionAir: b.frictionAir,
+      friction: b.friction,
+      mass: b.mass,
+      fillStyle: b.render.fillStyle,
+      noCollision: b.collisionFilter.category === CAT_GHOST,
+      _rotLocked: !!b._rotLocked,
+    }
     if (b.label === 'Circle Body') {
       return { type: 'circle', x: b.position.x, y: b.position.y,
-               radius: b.circleRadius, charge: b._charge ?? 0, options: baseOpts }
+               radius: b.circleRadius, charge: b._charge ?? 0, ...base }
     } else if (b._w !== undefined) {
       return { type: 'rectangle', x: b.position.x, y: b.position.y,
-               w: b._w, h: b._h, options: { ...baseOpts, angle: b.angle } }
+               w: b._w, h: b._h, angle: b.angle, ...base }
     } else {
-      return { type: 'polygon', vertices: polyWorldVerts(b), options: baseOpts }
+      return { type: 'polygon', vertices: polyWorldVerts(b), ...base }
     }
   })
 
@@ -1476,6 +1493,12 @@ function exportScene() {
     }
     if (c.bodyB) spec.bodyB = idToIndex.get(c.bodyB.id)
     if (c._springK != null) spec._springK = c._springK
+    if (c.label === 'pin') {
+      if (c._motorActive != null) spec._motorActive = c._motorActive
+      if (c._motorSpeed  != null) spec._motorSpeed  = c._motorSpeed
+      if (c._motorDir    != null) spec._motorDir    = c._motorDir
+      if (c._motorTorque != null) spec._motorTorque = c._motorTorque
+    }
     return spec
   })
 
