@@ -75,7 +75,7 @@ document.querySelector('#app').innerHTML = `
       <div class="toolbar-sep"></div>
 
       <div class="tb-group">
-        <button id="btn-pause" data-tooltip="一時停止 / 再開">⏸ 停止</button>
+        <button id="btn-pause" data-tooltip="一時停止 / 再開(Space)">⏸ 停止</button>
         <button id="reset" data-tooltip="一時保存があればその状態へ、なければ全クリア">↺ リセット</button>
         <button id="btn-reset-view" data-tooltip="ズーム・パンをデフォルトに戻す">⊞ View</button>
       </div>
@@ -99,8 +99,8 @@ document.querySelector('#app').innerHTML = `
 
     <div class="tb-row">
       <div class="tb-group">
-        <button id="btn-connect" class="toggle-btn" data-tooltip="接続モード切替">⚡ 接続</button>
-        <button id="btn-pin" class="toggle-btn" data-tooltip="釘打ちモード切替">📌 釘</button>
+        <button id="btn-pin" class="toggle-btn" data-tooltip="釘打ちモード切替(P)">📌 釘</button>
+        <button id="btn-connect" class="toggle-btn" data-tooltip="接続モード切替(C)">⚡ 接続</button>
         <div id="connect-options">
           <button id="btn-type-spring" class="type-btn active" data-type="spring" data-tooltip="バネで接続">バネ</button>
           <button id="btn-type-joint"  class="type-btn"        data-type="joint"  data-tooltip="関節で接続">関節</button>
@@ -324,7 +324,7 @@ const panelDisplay  = document.getElementById('panel-display')
 const speedGraphCanvas = document.getElementById('speed-graph')
 const speedGraphCtx    = speedGraphCanvas.getContext('2d')
 const connectHint   = document.getElementById('connect-hint')
-const DEFAULT_HINT  = 'Space: 停止/再開  |  C: 接続  |  P: 釘  |  F/B: 前面/背面  |  Del: 削除  |  Ctrl+Z/Y: 元に戻す/やり直す'
+const DEFAULT_HINT  = 'Space: 停止/再開  |  P: 釘  |  C: 接続  |  F/B: 前面/背面  |  Del: 削除  |  Ctrl+Z/Y: 元に戻す/やり直す  |  スクロール: ズーム  |  Shift+ドラッグ: パン |'
 connectHint.textContent = DEFAULT_HINT
 
 // Cached panel elements (avoid repeated getElementById in afterUpdate hot path)
