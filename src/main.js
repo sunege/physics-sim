@@ -248,6 +248,13 @@ document.querySelector('#app').innerHTML = `
                 <span class="slider-val">px</span>
               </div>
             </div>
+            <div id="charge-row" class="hidden">
+              <div class="slider-num-row">
+                <span class="param-key">電荷</span>
+                <input type="range" id="s-charge" min="-100" max="100" step="1" value="0">
+                <input type="number" id="n-charge" min="-100" max="100" step="1" value="0" class="num-input">
+              </div>
+            </div>
             <!-- 四角用 -->
             <div id="size-rect" class="hidden">
               <div class="slider-num-row">
@@ -733,10 +740,14 @@ function selectBody(body) {
     const isRect   = body.label === 'Rectangle Body'
     document.getElementById('size-circle').classList.toggle('hidden', !isCircle)
     document.getElementById('size-rect').classList.toggle('hidden', !isRect)
+    document.getElementById('charge-row').classList.toggle('hidden', !isCircle)
     if (isCircle) {
       const r = Math.round(body.circleRadius)
       document.getElementById('s-radius').value = r
       document.getElementById('n-radius').value = r
+      const charge = body._charge ?? 0
+      document.getElementById('s-charge').value = charge
+      document.getElementById('n-charge').value = charge
     }
     if (isRect) {
       const w = Math.round(body._w ?? 50), h = Math.round(body._h ?? 50)
@@ -930,7 +941,11 @@ Events.on(engine.world, 'afterAdd', (event) => {
     obj.render.lineWidth   = 1
   }
 })
-Events.on(engine.world, 'afterRemove', () => { _dynBodiesCache = null })
+Events.on(engine.world, 'afterRemove', (event) => {
+  _dynBodiesCache = null
+  const obj = event.object
+  if (obj && obj.type === 'body') chargedBodies.delete(obj)
+})
 let pauseForceRotLock = false
 
 function togglePause() {
@@ -1058,6 +1073,8 @@ function instantiateBodies(specs) {
       b._h = spec.h
     } else if (spec.type === 'circle') {
       b = Bodies.circle(spec.x, spec.y, spec.radius, opts)
+      b._charge = spec.charge ?? 0
+      if (b._charge !== 0) chargedBodies.add(b)
     } else if (spec.type === 'polygon') {
       const cx = spec.vertices.reduce((s, v) => s + v.x, 0) / spec.vertices.length
       const cy = spec.vertices.reduce((s, v) => s + v.y, 0) / spec.vertices.length
@@ -1273,7 +1290,7 @@ function captureSnapshot() {
     }
     const noCollision = b.collisionFilter.category === CAT_GHOST
     if (b.label === 'Circle Body') {
-      return { type: 'circle', x: b.position.x, y: b.position.y, radius: b.circleRadius, noCollision, ...base }
+      return { type: 'circle', x: b.position.x, y: b.position.y, radius: b.circleRadius, charge: b._charge ?? 0, noCollision, ...base }
     } else if (b._w !== undefined) {
       return { type: 'rectangle', x: b.position.x, y: b.position.y,
                w: b._w, h: b._h, angle: b.angle, noCollision, ...base }
@@ -1310,6 +1327,7 @@ function captureSnapshot() {
 }
 
 function restoreSnapshot(snap) {
+  chargedBodies.clear()
   if (drawMode) setDrawMode(null)
   if (paused) togglePause()
   showAllVelocities = false
@@ -1339,6 +1357,8 @@ function restoreSnapshot(snap) {
     let b
     if (spec.type === 'circle') {
       b = Bodies.circle(spec.x, spec.y, spec.radius, opts)
+      b._charge = spec.charge ?? 0
+      if (b._charge !== 0) chargedBodies.add(b)
     } else if (spec.type === 'rectangle') {
       b = Bodies.rectangle(spec.x, spec.y, spec.w, spec.h, { ...opts, angle: spec.angle })
       b._w = spec.w; b._h = spec.h
@@ -1432,7 +1452,7 @@ function exportScene() {
     const baseOpts = { restitution: b.restitution, frictionAir: b.frictionAir }
     if (b.label === 'Circle Body') {
       return { type: 'circle', x: b.position.x, y: b.position.y,
-               radius: b.circleRadius, options: baseOpts }
+               radius: b.circleRadius, charge: b._charge ?? 0, options: baseOpts }
     } else if (b._w !== undefined) {
       return { type: 'rectangle', x: b.position.x, y: b.position.y,
                w: b._w, h: b._h, options: { ...baseOpts, angle: b.angle } }
@@ -1501,7 +1521,7 @@ function copySelected() {
       angle: b.angle,
       _rotLocked: !!b._rotLocked,
     }
-    if (b.label === 'Circle Body') return { ...base, type: 'circle', radius: b.circleRadius }
+    if (b.label === 'Circle Body') return { ...base, type: 'circle', radius: b.circleRadius, charge: b._charge ?? 0 }
     if (b._w !== undefined) return { ...base, type: 'rectangle', w: b._w, h: b._h }
     return { ...base, type: 'polygon', vertices: polyWorldVerts(b) }
   })
@@ -1551,6 +1571,8 @@ function pasteClipboard(worldPos) {
     let b
     if (spec.type === 'circle') {
       b = Bodies.circle(x, y, spec.radius, opts)
+      b._charge = spec.charge ?? 0
+      if (b._charge !== 0) chargedBodies.add(b)
     } else if (spec.type === 'rectangle') {
       b = Bodies.rectangle(x, y, spec.w, spec.h, { ...opts, angle: spec.angle })
       b._w = spec.w; b._h = spec.h
@@ -1675,6 +1697,7 @@ let lastMouseWorldPos = { x: 0, y: 0 } // last known mouse world position for pa
 const springs = []
 const pins    = []
 const joints  = []
+const chargedBodies = new Set()  // circles with non-zero charge; skip Coulomb loop when empty
 
 function addConstraint(c) {
   if (c.label === 'spring') springs.push(c)
@@ -1831,6 +1854,7 @@ function spawnBody(type, x, y) {
   let b
   if (type === 'circle') {
     b = Bodies.circle(x, y, spawnParams.size, opts)
+    b._charge = 0
   } else if (type === 'tri-eq') {
     b = Bodies.polygon(x, y, 3, spawnParams.size, opts)
   } else {
@@ -2042,6 +2066,8 @@ Events.on(mouseConstraint, 'startdrag', () => {
 // Force-based spring constant (Hooke's law: F = k * extension, applied via Body.applyForce)
 // This conserves energy in Verlet integration, unlike PBD constraints.
 const SPRING_K = 0.0003
+const K_COULOMB       = 0.1  // Coulomb constant (tunable)
+const MIN_COULOMB_DIST = 10  // minimum distance clamp to prevent force divergence (px)
 const ARROW_ACCEL = 0.005  // arrow-key control: acceleration magnitude (uniform across masses)
 const arrowKeysDown = new Set()
 let nudgePendingUndo = true
@@ -3025,6 +3051,54 @@ Events.on(render, 'afterRender', () => {
     ctx.stroke()
   })
 
+  // Charged body indicators: colored ring + +/- label
+  if (chargedBodies.size > 0) {
+    chargedBodies.forEach(b => {
+      if (b.isStatic) return
+      const r = b.circleRadius
+      if (b.position.x + r < vMin.x || b.position.x - r > vMax.x ||
+          b.position.y + r < vMin.y || b.position.y - r > vMax.y) return
+
+      const charge    = b._charge
+      const absCharge = Math.abs(charge)
+      const color     = charge > 0 ? '#e94560' : '#53d8fb'
+      const ringW     = Math.max(1, absCharge / 100 * 8) / camera.scale
+      const gap       = 3 / camera.scale
+
+      const arcR = r + gap + ringW / 2
+      ctx.save()
+      ctx.globalAlpha = 0.85
+      // White outline ring behind colored ring for contrast
+      ctx.strokeStyle = 'rgba(255,255,255,0.9)'
+      ctx.lineWidth   = ringW + 2.5 / camera.scale
+      ctx.beginPath()
+      ctx.arc(b.position.x, b.position.y, arcR, 0, Math.PI * 2)
+      ctx.stroke()
+      ctx.strokeStyle = color
+      ctx.lineWidth   = ringW
+      ctx.beginPath()
+      ctx.arc(b.position.x, b.position.y, arcR, 0, Math.PI * 2)
+      ctx.stroke()
+      ctx.restore()
+
+      const label    = charge > 0 ? '+' : '−'
+      const fontSize = Math.min(Math.max(r * 0.5, 9 / camera.scale), 18 / camera.scale)
+      ctx.save()
+      ctx.globalAlpha  = 0.95
+      ctx.font         = `bold ${fontSize}px sans-serif`
+      ctx.textAlign    = 'center'
+      ctx.textBaseline = 'middle'
+      // White outline on text for contrast
+      ctx.strokeStyle = 'rgba(255,255,255,0.9)'
+      ctx.lineWidth   = 3 / camera.scale
+      ctx.lineJoin    = 'round'
+      ctx.strokeText(label, b.position.x, b.position.y)
+      ctx.fillStyle   = color
+      ctx.fillText(label, b.position.x, b.position.y)
+      ctx.restore()
+    })
+  }
+
   // Constraints
   springs.forEach(c => {
     const { pA, pB } = constraintWorldPoints(c)
@@ -3372,6 +3446,21 @@ Events.on(engine, 'beforeUpdate', () => {
     if (c.bodyA && !c.bodyA.isStatic) Body.applyForce(c.bodyA, pA, { x: fx, y: fy })
     if (c.bodyB && !c.bodyB.isStatic) Body.applyForce(c.bodyB, pB, { x: -fx, y: -fy })
   })
+  if (chargedBodies.size >= 2) {
+    const charged = [...chargedBodies]
+    for (let i = 0; i < charged.length; i++) {
+      for (let j = i + 1; j < charged.length; j++) {
+        const bA = charged[i], bB = charged[j]
+        const dx = bB.position.x - bA.position.x
+        const dy = bB.position.y - bA.position.y
+        const dist = Math.max(Math.hypot(dx, dy), MIN_COULOMB_DIST)
+        const F = K_COULOMB * bA._charge * bB._charge / (dist * dist)
+        const nx = dx / dist, ny = dy / dist
+        if (!bA.isStatic) Body.applyForce(bA, bA.position, { x: -F * nx, y: -F * ny })
+        if (!bB.isStatic) Body.applyForce(bB, bB.position, { x:  F * nx, y:  F * ny })
+      }
+    }
+  }
   pins.forEach(c => {
     if (!c._motorActive || !c.bodyA) return
     const bodyA = c.bodyA
@@ -3525,6 +3614,25 @@ document.getElementById('n-height').addEventListener('change', (e) => {
   resizeBody(selectedBody, selectedBody._w ?? val, val)
 })
 
+function setCharge(body, val) {
+  body._charge = val
+  if (val !== 0) chargedBodies.add(body)
+  else chargedBodies.delete(body)
+}
+document.getElementById('s-charge').addEventListener('input', (e) => {
+  if (!selectedBody) return
+  const val = parseFloat(e.target.value)
+  document.getElementById('n-charge').value = val
+  setCharge(selectedBody, val)
+})
+document.getElementById('n-charge').addEventListener('change', (e) => {
+  if (!selectedBody) return
+  const val = Math.min(100, Math.max(-100, parseFloat(e.target.value) || 0))
+  e.target.value = val
+  document.getElementById('s-charge').value = val
+  setCharge(selectedBody, val)
+})
+
 document.getElementById('s-springk').addEventListener('input', (e) => {
   if (!selectedConstraint) return
   const val = parseFloat(e.target.value)
@@ -3615,6 +3723,7 @@ document.getElementById('reset').addEventListener('click', () => {
   clearAllSelection()
   rectSelect = null
   clearConstraints()
+  chargedBodies.clear()
   Composite.clear(engine.world)
   boundaries = createBoundaries()
   Composite.add(engine.world, boundaries)
