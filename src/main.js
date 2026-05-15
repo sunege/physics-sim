@@ -1096,10 +1096,12 @@ function instantiateBodies(specs) {
 function instantiateConstraints(specs, bodies) {
   const result = []
   for (const spec of specs) {
+    // Copy pointA/pointB into new objects — Matter.js mutates these in-place via
+    // Vector.rotate in Constraint.solve, which would corrupt the snapshot spec.
     const opts = {
       bodyA: bodies[spec.bodyA],
-      pointA: spec.pointA ?? { x: 0, y: 0 },
-      pointB: spec.pointB ?? { x: 0, y: 0 },
+      pointA: spec.pointA ? { x: spec.pointA.x, y: spec.pointA.y } : { x: 0, y: 0 },
+      pointB: spec.pointB ? { x: spec.pointB.x, y: spec.pointB.y } : { x: 0, y: 0 },
       length: spec.length ?? 0,
       stiffness: spec.stiffness ?? 0.8,
       label: spec.label ?? 'joint'
@@ -1107,7 +1109,7 @@ function instantiateConstraints(specs, bodies) {
     if (spec.bodyB != null) opts.bodyB = bodies[spec.bodyB]
     if (spec.pointAWorld) {
       delete opts.bodyA
-      opts.pointA = spec.pointAWorld
+      opts.pointA = { x: spec.pointAWorld.x, y: spec.pointAWorld.y }
     }
     if (spec.label === 'pin') opts.render = { visible: false }
     const c = Constraint.create(opts)
@@ -2077,11 +2079,23 @@ document.getElementById('btn-clear-constraints').addEventListener('click', () =>
   clearConstraints()
 })
 
-Events.on(mouseConstraint, 'startdrag', () => {
+Events.on(mouseConstraint, 'startdrag', (e) => {
   if (connectMode || pinMode || rectSelect || velDragging || drawMode || isPanning) {
     mouseConstraint.body = null
     mouse.button = -1
   } else {
+    // Matter.js iterates composite forward (background first) and breaks on first hit,
+    // so override its selection with the frontmost (highest Z) body at the click point.
+    const pos = e.mouse.position
+    const movable = Composite.allBodies(engine.world).filter(b => !b.isStatic)
+    const hits = queryPointByZ(movable, pos)
+    if (hits.length > 0 && hits[0] !== mouseConstraint.body) {
+      const frontmost = hits[0]
+      mouseConstraint.body = frontmost
+      mouseConstraint.constraint.bodyB = frontmost
+      mouseConstraint.constraint.pointB = { x: pos.x - frontmost.position.x, y: pos.y - frontmost.position.y }
+      mouseConstraint.constraint.angleB = frontmost.angle
+    }
     pushUndo()
   }
 })
@@ -2354,7 +2368,7 @@ Events.on(mouseConstraint, 'mousedown', (e) => {
   // Pause drag: grab body via Query.point (Runner is stopped, so mouseConstraint won't move it)
   if (paused && !connectMode && !drawMode) {
     const movable = Composite.allBodies(engine.world).filter(b => !b.isStatic)
-    const hits = Query.point(movable, pos)
+    const hits = queryPointByZ(movable, pos)
     if (hits.length > 0) {
       pauseDragBody   = hits[0]
       pauseDragOffset = { x: pauseDragBody.position.x - pos.x, y: pauseDragBody.position.y - pos.y }
@@ -3045,6 +3059,31 @@ function drawSpringLine(ctx, pA, pB, isSelected = false) {
   })
 }
 
+// Render circle rotation indicators at the correct Z-level by interleaving with body rendering.
+// Drawing all indicators in afterRender would put them on top of every body regardless of Z-order.
+const _origRenderBodies = Render.bodies
+Render.bodies = function(r, bodies, context) {
+  for (let i = 0; i < bodies.length; i++) {
+    const b = bodies[i]
+    _origRenderBodies(r, [b], context)
+    if (b.label === 'Circle Body' && b.render.visible && !b.isStatic) {
+      const vMin = r.bounds.min, vMax = r.bounds.max
+      if (b.position.x + b.circleRadius >= vMin.x && b.position.x - b.circleRadius <= vMax.x &&
+          b.position.y + b.circleRadius >= vMin.y && b.position.y - b.circleRadius <= vMax.y) {
+        const ex = b.position.x + b.circleRadius * Math.cos(b.angle)
+        const ey = b.position.y + b.circleRadius * Math.sin(b.angle)
+        context.strokeStyle = 'rgba(0,0,0,0.4)'
+        context.lineWidth = 1 / camera.scale
+        context.beginPath()
+        context.moveTo(b.position.x, b.position.y)
+        context.lineTo(ex, ey)
+        context.stroke()
+        context.globalAlpha = 1
+      }
+    }
+  }
+}
+
 Events.on(render, 'afterRender', () => {
   const ctx = render.context
 
@@ -3096,21 +3135,7 @@ Events.on(render, 'afterRender', () => {
   ctx.lineWidth = 4 / camera.scale
   ctx.strokeRect(worldBounds.left, worldBounds.top, worldBounds.right - worldBounds.left, worldBounds.bottom - worldBounds.top)
 
-  // Circle rotation indicator
   const vMin = render.bounds.min, vMax = render.bounds.max
-  ctx.strokeStyle = 'rgba(0,0,0,0.4)'
-  ctx.lineWidth   = 1 / camera.scale
-  dynamicBodies().forEach(b => {
-    if (b.label !== 'Circle Body') return
-    if (b.position.x + b.circleRadius < vMin.x || b.position.x - b.circleRadius > vMax.x ||
-        b.position.y + b.circleRadius < vMin.y || b.position.y - b.circleRadius > vMax.y) return
-    const ex = b.position.x + b.circleRadius * Math.cos(b.angle)
-    const ey = b.position.y + b.circleRadius * Math.sin(b.angle)
-    ctx.beginPath()
-    ctx.moveTo(b.position.x, b.position.y)
-    ctx.lineTo(ex, ey)
-    ctx.stroke()
-  })
 
   // Charged body indicators: colored ring + +/- label
   if (chargedBodies.size > 0) {
