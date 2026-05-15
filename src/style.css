@@ -295,7 +295,8 @@ button:hover {
   color: #fff;
 }
 
-#panel-close {
+#panel-close,
+#panel-collapse {
   background: none;
   border: none;
   color: #aaa;
@@ -305,9 +306,19 @@ button:hover {
   line-height: 1;
 }
 
-#panel-close:hover {
+#panel-close:hover,
+#panel-collapse:hover {
   color: #fff;
   background: none;
+}
+
+#info-panel.collapsed .panel-body {
+  display: none;
+}
+
+#info-panel.collapsed .panel-header {
+  border-bottom: none;
+  border-radius: 6px;
 }
 
 .panel-body {

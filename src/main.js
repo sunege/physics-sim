@@ -17,11 +17,11 @@ document.querySelector('#app').innerHTML = `
 
       <div class="tb-group">
         <div class="tb-popover-wrap" id="spawn-wrap">
-          <button id="add-circle" class="toggle-btn" data-tooltip="円を追加">● 円</button>
-          <button id="add-box" class="toggle-btn" data-tooltip="四角を追加">■ 四角</button>
-          <button id="btn-tri-eq"  class="toggle-btn" data-tooltip="正三角形を追加">△ 正三</button>
-          <button id="btn-tri-arb" class="toggle-btn" data-tooltip="任意三角形を追加">△ 任意</button>
-          <button id="btn-polygon" class="toggle-btn" data-tooltip="多角形を追加">⬡ 多角</button>
+          <button id="add-circle" class="toggle-btn" data-tooltip="円を追加(1)">● 円</button>
+          <button id="add-box" class="toggle-btn" data-tooltip="四角を追加(2)">■ 四角</button>
+          <button id="btn-tri-eq"  class="toggle-btn" data-tooltip="正三角形を追加(3)">△ 正三</button>
+          <button id="btn-tri-arb" class="toggle-btn" data-tooltip="任意三角形を追加(4)">△ 任意</button>
+          <button id="btn-polygon" class="toggle-btn" data-tooltip="多角形を追加(5)">⬡ 多角</button>
           <div class="tb-popover" id="spawn-panel">
             <div class="spawn-panel-header">
               <span id="spawn-panel-title" class="spawn-panel-title"></span>
@@ -77,7 +77,7 @@ document.querySelector('#app').innerHTML = `
       <div class="tb-group">
         <button id="btn-pause" data-tooltip="一時停止 / 再開(Space)">⏸ 停止</button>
         <button id="reset" data-tooltip="一時保存があればその状態へ、なければ全クリア">↺ リセット</button>
-        <button id="btn-reset-view" data-tooltip="ズーム・パンをデフォルトに戻す">⊞ View</button>
+        <button id="btn-reset-view" data-tooltip="ズーム・パンをデフォルトに戻す(V)">⊞ View</button>
       </div>
 
       <div class="toolbar-sep"></div>
@@ -102,12 +102,12 @@ document.querySelector('#app').innerHTML = `
         <button id="btn-pin" class="toggle-btn" data-tooltip="釘打ちモード切替(P)">📌 釘</button>
         <button id="btn-connect" class="toggle-btn" data-tooltip="接続モード切替(C)">⚡ 接続</button>
         <div id="connect-options">
-          <button id="btn-type-spring" class="type-btn active" data-type="spring" data-tooltip="バネで接続">バネ</button>
-          <button id="btn-type-joint"  class="type-btn"        data-type="joint"  data-tooltip="関節で接続">関節</button>
+          <button id="btn-type-spring" class="type-btn active" data-type="spring" data-tooltip="バネで接続(Z)">バネ</button>
+          <button id="btn-type-joint"  class="type-btn"        data-type="joint"  data-tooltip="関節で接続(X)">関節</button>
           <span class="toolbar-sep-v"></span>
-          <button class="type-btn attach-btn active" data-attach="snap" data-tooltip="スナップ点に接続">スナップ</button>
-          <button class="type-btn attach-btn"        data-attach="edge" data-tooltip="エッジ上の点に接続">エッジ</button>
-          <button class="type-btn attach-btn"        data-attach="free" data-tooltip="クリック位置に接続">自由</button>
+          <button class="type-btn attach-btn active" data-attach="snap" data-tooltip="スナップ点に接続(S)">スナップ</button>
+          <button class="type-btn attach-btn"        data-attach="edge" data-tooltip="エッジ上の点に接続(E)">エッジ</button>
+          <button class="type-btn attach-btn"        data-attach="free" data-tooltip="クリック位置に接続(J)">自由</button>
           <button id="btn-clear-constraints" data-tooltip="全接続を削除">✕ 接続</button>
         </div>
       </div>
@@ -166,6 +166,7 @@ document.querySelector('#app').innerHTML = `
         <span id="panel-title">オブジェクト情報</span>
         <div class="panel-header-actions">
           <button id="panel-delete" class="btn-danger">削除</button>
+          <button id="panel-collapse">▲</button>
           <button id="panel-close">✕</button>
         </div>
       </div>
@@ -920,7 +921,7 @@ let showAllVelocities = false
 let showCOM = false
 let velDragging       = false
 let velDragBodies     = []
-const VEL_SCALE       = 30
+const VEL_SCALE       = 10
 const VEL_TIP_RADIUS  = 12
 const velocityBuffer  = new Map()  // body → { vx, vy, av }
 const pauseRotBuffer  = new Map()  // body → { wasLocked, origInertia }
@@ -2024,20 +2025,22 @@ function finalizePolygon(verts) {
                           : '頂点をクリック (最大12点, Enterまたは始点で閉じる)'
 }
 
+function setConnectType(type) {
+  connectType = type
+  document.querySelectorAll('.type-btn:not(.attach-btn)').forEach(b => b.classList.toggle('active', b.dataset.type === type))
+}
+
 document.querySelectorAll('.type-btn:not(.attach-btn)').forEach(btn => {
-  btn.addEventListener('click', () => {
-    document.querySelectorAll('.type-btn:not(.attach-btn)').forEach(b => b.classList.remove('active'))
-    btn.classList.add('active')
-    connectType = btn.dataset.type
-  })
+  btn.addEventListener('click', () => setConnectType(btn.dataset.type))
 })
 
+function setAttachMode(mode) {
+  attachMode = mode
+  document.querySelectorAll('.attach-btn').forEach(b => b.classList.toggle('active', b.dataset.attach === mode))
+}
+
 document.querySelectorAll('.attach-btn').forEach(btn => {
-  btn.addEventListener('click', () => {
-    document.querySelectorAll('.attach-btn').forEach(b => b.classList.remove('active'))
-    btn.classList.add('active')
-    attachMode = btn.dataset.attach
-  })
+  btn.addEventListener('click', () => setAttachMode(btn.dataset.attach))
 })
 
 document.getElementById('btn-connect').addEventListener('click', () => setConnectMode(!connectMode))
@@ -2788,6 +2791,25 @@ window.addEventListener('keydown', (e) => {
   if ((e.metaKey || e.ctrlKey) && e.key === 'v') {
     e.preventDefault(); const { x: _px, y: _py } = snapToGrid(lastMouseWorldPos.x, lastMouseWorldPos.y); pasteClipboard({ x: _px, y: _py }); return
   }
+  if (e.key === '1') { setSpawnMode('circle'); return }
+  if (e.key === '2') { setSpawnMode('box'); return }
+  if (e.key === '3') { setSpawnMode('tri-eq'); return }
+  if (e.key === '4') {
+    if (drawMode === 'tri-arb') setDrawMode(null)
+    else setDrawMode('tri-arb')
+    return
+  }
+  if (e.key === '5') {
+    if (drawMode === 'polygon') setDrawMode(null)
+    else setDrawMode('polygon')
+    return
+  }
+  if (e.key === 's' || e.key === 'S') { setAttachMode('snap'); return }
+  if (e.key === 'e' || e.key === 'E') { setAttachMode('edge'); return }
+  if (e.key === 'j' || e.key === 'J') { setAttachMode('free'); return }
+  if (e.key === 'z' || e.key === 'Z') { setConnectType('spring'); return }
+  if (e.key === 'x' || e.key === 'X') { setConnectType('joint'); return }
+  if (e.key === 'v' || e.key === 'V') { resetView(); return }
   if (e.key === 'g' || e.key === 'G') {
     gridSnapEnabled = !gridSnapEnabled
     document.getElementById('btn-grid-snap').classList.toggle('active', gridSnapEnabled)
@@ -2956,8 +2978,7 @@ function computeAttachPoint(body, pos, mode) {
   return { local, world: pos }
 }
 
-function drawVelocityArrow(ctx, body, highlight = false) {
-  const vel = velocityBuffer.get(body) ?? { vx: 0, vy: 0 }
+function drawVelocityArrow(ctx, body, vel, highlight = false, showTip = true) {
   const vx = vel.vx * VEL_SCALE
   const vy = vel.vy * VEL_SCALE
   const cx = body.position.x, cy = body.position.y
@@ -2983,14 +3004,16 @@ function drawVelocityArrow(ctx, body, highlight = false) {
     ctx.fill()
   }
 
-  // 先端クリック判定用の円
-  ctx.fillStyle   = 'rgba(0,0,0,0.25)'
-  ctx.strokeStyle = 'rgba(255,255,255,0.75)'
-  ctx.lineWidth   = 1.5 / camera.scale
-  ctx.beginPath()
-  ctx.arc(tx, ty, VEL_TIP_RADIUS / camera.scale, 0, Math.PI * 2)
-  ctx.fill()
-  ctx.stroke()
+  if (showTip) {
+    // 先端クリック判定用の円
+    ctx.fillStyle   = 'rgba(0,0,0,0.25)'
+    ctx.strokeStyle = 'rgba(255,255,255,0.75)'
+    ctx.lineWidth   = 1.5 / camera.scale
+    ctx.beginPath()
+    ctx.arc(tx, ty, VEL_TIP_RADIUS / camera.scale, 0, Math.PI * 2)
+    ctx.fill()
+    ctx.stroke()
+  }
 }
 
 function drawJointLine(ctx, pA, pB, isSelected = false) {
@@ -3009,11 +3032,13 @@ function drawJointLine(ctx, pA, pB, isSelected = false) {
   })
 }
 
-function drawPinPoint(ctx, pt, isSelected = false) {
+function drawPinPoint(ctx, pt, isSelected = false, motorOn = false) {
   const r = 6 / camera.scale
   const arm = r * 0.9
-  ctx.strokeStyle = isSelected ? '#ffffff' : '#ffd700'
-  ctx.fillStyle   = isSelected ? 'rgba(255,255,255,0.15)' : 'rgba(255,215,0,0.15)'
+  const baseColor = motorOn ? '#ffd9a0' : '#ffd700'
+  const baseFill  = motorOn ? 'rgba(255,217,160,0.3)' : 'rgba(255,215,0,0.15)'
+  ctx.strokeStyle = isSelected ? '#ffffff' : baseColor
+  ctx.fillStyle   = isSelected ? 'rgba(255,255,255,0.15)' : baseFill
   ctx.lineWidth   = 2 / camera.scale
   ctx.beginPath()
   ctx.arc(pt.x, pt.y, r, 0, Math.PI * 2)
@@ -3202,8 +3227,9 @@ Events.on(render, 'afterRender', () => {
     const { pA, pB } = constraintWorldPoints(c)
     if (pA.x > vMax.x || pA.x < vMin.x || pA.y > vMax.y || pA.y < vMin.y) return
     const isSel = c === selectedConstraint
-    drawPinPoint(ctx, pA, isSel)
-    if (c.bodyB) drawPinPoint(ctx, pB, isSel)
+    const motorOn = !!c._motorActive
+    drawPinPoint(ctx, pA, isSel, motorOn)
+    if (c.bodyB) drawPinPoint(ctx, pB, isSel, motorOn)
   })
 
   // Connect mode: snap point indicators
@@ -3326,12 +3352,15 @@ Events.on(render, 'afterRender', () => {
     ctx.setLineDash([])
   }
 
-  // Velocity arrows (paused only)
-  if (paused) {
-    const velTargets = showAllVelocities
-      ? dynamicBodies()
-      : getTargets()
-    velTargets.forEach(b => drawVelocityArrow(ctx, b, selectedBody === b))
+  // Velocity arrows
+  if (paused || showAllVelocities) {
+    const velTargets = showAllVelocities ? dynamicBodies() : getTargets()
+    velTargets.forEach(b => {
+      const vel = paused
+        ? (velocityBuffer.get(b) ?? { vx: 0, vy: 0 })
+        : { vx: b.velocity.x, vy: b.velocity.y }
+      drawVelocityArrow(ctx, b, vel, selectedBody === b, paused)
+    })
   }
 
   // Draw mode preview
@@ -3599,6 +3628,13 @@ Events.on(engine, 'afterUpdate', () => {
 // ============================================================
 document.getElementById('panel-close').addEventListener('click', clearAllSelection)
 
+let panelCollapsed = false
+document.getElementById('panel-collapse').addEventListener('click', () => {
+  panelCollapsed = !panelCollapsed
+  infoPanel.classList.toggle('collapsed', panelCollapsed)
+  document.getElementById('panel-collapse').textContent = panelCollapsed ? '▼' : '▲'
+})
+
 document.getElementById('panel-delete').addEventListener('click', () => {
   if (selectedConstraint) deleteSelectedConstraint()
   else deleteSelected()
@@ -3829,7 +3865,7 @@ document.getElementById('reset').addEventListener('click', () => {
   applyCamera()
 })
 
-document.getElementById('btn-reset-view').addEventListener('click', () => {
+function resetView() {
   const cw = render.options.width
   const ch = render.options.height
   const ww = worldBounds.right  - worldBounds.left
@@ -3842,7 +3878,9 @@ document.getElementById('btn-reset-view').addEventListener('click', () => {
   camera.offsetX = (cw - ww * s) / 2 - worldBounds.left * s
   camera.offsetY = (ch - wh * s) / 2 - worldBounds.top  * s
   applyCamera()
-})
+}
+
+document.getElementById('btn-reset-view').addEventListener('click', resetView)
 
 // ============================================================
 // World size controls
@@ -3920,10 +3958,12 @@ document.addEventListener('click', e => {
   if (!document.getElementById('settings-wrap').contains(e.target)) {
     document.getElementById('settings-panel').classList.remove('open')
   }
-  if (spawnMode && !document.getElementById('spawn-wrap').contains(e.target) && !canvas.contains(e.target)) {
+  const inSpawnWrap = document.getElementById('spawn-wrap').contains(e.target)
+  const inGridSnap = e.target === document.getElementById('btn-grid-snap') || e.target === document.getElementById('grid-size-input')
+  if (spawnMode && !inSpawnWrap && !inGridSnap && !canvas.contains(e.target)) {
     setSpawnMode(null)
   }
-  if ((drawMode === 'tri-arb' || drawMode === 'polygon') && !document.getElementById('spawn-wrap').contains(e.target) && !canvas.contains(e.target)) {
+  if ((drawMode === 'tri-arb' || drawMode === 'polygon') && !inSpawnWrap && !inGridSnap && !canvas.contains(e.target)) {
     setDrawMode(null)
   }
 })
